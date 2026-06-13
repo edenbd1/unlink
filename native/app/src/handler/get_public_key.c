@@ -28,12 +28,13 @@ static nbgl_contentTagValue_t g_pairs[2];
 static nbgl_contentTagValueList_t g_pairList;
 
 static int sign_and_reply(void) {
-    uint8_t key[32] = {0};
-    os_perso_derive_node_bip32(CX_CURVE_256K1, UNLINK_PATH, 5, key, NULL);
-
-    explicit_bzero(key, sizeof(key));
-    uint8_t resp[192];
-    unlink_poseidon_test(resp, (int) g_nrounds);   // DEBUG: g_nrounds rounds
+    // SELFTEST: sign known vector 0 with a hardcoded key (ASCII decimal of sk),
+    // msg = 42, and return Ax|Ay|R8x|R8y|S (160B) for byte-exact validation.
+    static const char K[] = "16967704786777658754472954460947063077075705541806525685600149541824228251441";
+    uint8_t msg[32] = {0}; msg[31] = 42;
+    uint8_t resp[160];
+    unlink_sign((const uint8_t *) K, sizeof(K) - 1, msg,
+                resp, resp + 32, resp + 64, resp + 96, resp + 128);
     return io_send_response_pointer(resp, sizeof(resp), SWO_SUCCESS);
 }
 

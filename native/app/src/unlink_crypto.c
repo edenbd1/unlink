@@ -129,8 +129,10 @@ void unlink_sign(const uint8_t *key, size_t keylen, const uint8_t msg_be32[32],
   cx_bn_reduce(R[3], R[2], SUB);                      // hm mod sub
   cx_bn_reduce(R[6], R[1], SUB);                      // s mod sub  (operands MUST be < modulus)
   cx_bn_mod_mul(R[4], R[3], R[6], SUB);               // (hm*s) mod sub
-  cx_bn_mod_add(R[5], R[0], R[4], SUB);               // r + hm*s mod sub
-  cx_bn_export(R[5], S, N);
+  cx_bn_reduce(R[7], R[4], SUB);                       // force < sub (SE mod_mul can leave [sub,2sub))
+  cx_bn_mod_add(R[5], R[0], R[7], SUB);               // r + hm*s mod sub
+  cx_bn_reduce(R[8], R[5], SUB);                       // force < sub
+  cx_bn_export(R[8], S, N);
 
   cx_bn_unlock();
 }
