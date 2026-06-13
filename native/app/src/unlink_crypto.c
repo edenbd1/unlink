@@ -1,69 +1,83 @@
-// Unlink EdDSA-Poseidon signer on the Secure Element — cx_math backend.
-// Uses the buffer-based cx_math_* modular API (NO cx_bn allocation pool), so it
-// can't exhaust the BN pool. Field elements are 32-byte big-endian.
-// 1:1 with the GMP host port validated 9/9 vs the SDK vectors; projective point
-// arithmetic (one inversion per scalar mul).
+// Unlink EdDSA-Poseidon signer on the Secure Element — lean cx_bn backend.
+// Uses cx_bn (hardware modular arithmetic) with a FIXED register file so the BN
+// pool never grows: 6 persistent (modulus/params/base) + 17 scratch = 23 total.
+// Projective point arithmetic. 1:1 with the GMP host port (9/9 vectors).
 #include <string.h>
 #include "cx.h"
 #include "os.h"
+#include "os_io_seproxyhal.h"
 #include "unlink_crypto.h"
 #include "unlink_params.h"
 
 #define N 32
-static void fmul(uint8_t *r, const uint8_t *a, const uint8_t *b){ cx_math_multm_no_throw(r, a, b, PARM_P, N); }
-static void fadd(uint8_t *r, const uint8_t *a, const uint8_t *b){ cx_math_addm_no_throw(r, a, b, PARM_P, N); }
-static void fsub(uint8_t *r, const uint8_t *a, const uint8_t *b){ cx_math_subm_no_throw(r, a, b, PARM_P, N); }
-static void finv(uint8_t *r, const uint8_t *a){ cx_math_invprimem_no_throw(r, a, PARM_P, N); }
+#define NREG 17
+// K = 2^256 mod subOrder (for reducing the 64-byte nonce with 32-byte ops only)
+static const uint8_t PARM_K[32] = {
+  0x01,0xf1,0x64,0x24,0xe1,0xbb,0x77,0x24,0xf8,0x5a,0x92,0x01,0xd8,0x18,0xf0,0x15,
+  0xe7,0xac,0xff,0xc6,0xa0,0x98,0xf2,0x4b,0x07,0x33,0x15,0xde,0xa0,0x8f,0x9c,0x76};
+static cx_bn_t P, SUB, bA, bD, B8X, B8Y;   // persistent
+static cx_bn_t R[NREG];                      // scratch register file
 
-// Projective twisted-Edwards unified add (no inversion). (X:Y:Z), x=X/Z, y=Y/Z.
-static void addProj(uint8_t *X3,uint8_t *Y3,uint8_t *Z3,
-                    const uint8_t *X1,const uint8_t *Y1,const uint8_t *Z1,
-                    const uint8_t *X2,const uint8_t *Y2,const uint8_t *Z2){
-  static uint8_t A[N],B[N],C[N],D[N],E[N],F[N],G[N],t1[N],t2[N];
+static void fmul(cx_bn_t r,const cx_bn_t a,const cx_bn_t b){ cx_bn_mod_mul(r,a,b,P); }
+static void fadd(cx_bn_t r,const cx_bn_t a,const cx_bn_t b){ cx_bn_mod_add(r,a,b,P); }
+static void fsub(cx_bn_t r,const cx_bn_t a,const cx_bn_t b){ cx_bn_mod_sub(r,a,b,P); }
+static void finv(cx_bn_t r,const cx_bn_t a){ cx_bn_mod_invert_nprime(r,a,P); }
+
+// Projective unified add (no inversion). Outputs X3,Y3,Z3; scratch = R[10..16].
+static void addProj(cx_bn_t X3,cx_bn_t Y3,cx_bn_t Z3,
+                    const cx_bn_t X1,const cx_bn_t Y1,const cx_bn_t Z1,
+                    const cx_bn_t X2,const cx_bn_t Y2,const cx_bn_t Z2){
+  cx_bn_t A=R[10],B=R[11],C=R[12],D=R[13],E=R[14],F=R[15],G=R[16];
   fmul(A,Z1,Z2); fmul(B,A,A); fmul(C,X1,X2); fmul(D,Y1,Y2);
-  fmul(E,PARM_D,C); fmul(E,E,D); fsub(F,B,E); fadd(G,B,E);
-  fadd(t1,X1,Y1); fadd(t2,X2,Y2); fmul(t1,t1,t2); fsub(t1,t1,C); fsub(t1,t1,D);
-  fmul(t1,t1,F); fmul(X3,t1,A);                       // X3 = A*F*((X1+Y1)(X2+Y2)-C-D)
-  fmul(t2,PARM_A,C); fsub(t2,D,t2); fmul(t2,t2,G); fmul(Y3,t2,A);   // Y3 = A*G*(D-a*C)
-  fmul(Z3,F,G);                                       // Z3 = F*G
+  fmul(E,bD,C); fmul(E,E,D); fsub(F,B,E); fadd(G,B,E);
+  fadd(B,X1,Y1); fadd(E,X2,Y2); fmul(B,B,E); fsub(B,B,C); fsub(B,B,D);
+  fmul(B,B,F); fmul(X3,B,A);
+  fmul(E,bA,C); fsub(E,D,E); fmul(E,E,G); fmul(Y3,E,A);
+  fmul(Z3,F,G);
 }
 
-// R = e·(bx,by), e a 32-byte big-endian scalar. Left-to-right double-and-add.
-static void mulPoint(uint8_t *rx,uint8_t *ry,const uint8_t *bx,const uint8_t *by,const uint8_t *e){
-  static uint8_t Rx[N],Ry[N],Rz[N],Bx[N],By[N],Bz[N],Tx[N],Ty[N],Tz[N],zi[N];
-  memset(Rx,0,N); memset(Ry,0,N); Ry[N-1]=1; memset(Rz,0,N); Rz[N-1]=1;   // identity (0:1:1)
-  memcpy(Bx,bx,N); memcpy(By,by,N); memset(Bz,0,N); Bz[N-1]=1;            // base (bx:by:1)
+// out = (e·base) affine, exported to rx32/ry32. base passed as cx_bn (bx,by).
+// Uses R[0..9] (addProj uses R[10..16]).
+static void mulPoint(uint8_t *rx32,uint8_t *ry32,const cx_bn_t bx,const cx_bn_t by,const uint8_t *e){
+  cx_bn_t Rx=R[0],Ry=R[1],Rz=R[2],Bz=R[3],Tx=R[6],Ty=R[7],Tz=R[8],zi=R[9];
+  cx_bn_set_u32(Rx,0); cx_bn_set_u32(Ry,1); cx_bn_set_u32(Rz,1);   // identity
+  cx_bn_set_u32(Bz,1);
   for (int i = 255; i >= 0; i--) {
-    addProj(Tx,Ty,Tz, Rx,Ry,Rz, Rx,Ry,Rz);                               // R = 2R
-    memcpy(Rx,Tx,N); memcpy(Ry,Ty,N); memcpy(Rz,Tz,N);
+    if ((i & 7) == 0) io_seproxyhal_io_heartbeat();
+    addProj(Tx,Ty,Tz, Rx,Ry,Rz, Rx,Ry,Rz);
+    cx_bn_copy(Rx,Tx); cx_bn_copy(Ry,Ty); cx_bn_copy(Rz,Tz);
     if ((e[N-1-(i>>3)] >> (i&7)) & 1) {
-      addProj(Tx,Ty,Tz, Rx,Ry,Rz, Bx,By,Bz);                             // R = R + base
-      memcpy(Rx,Tx,N); memcpy(Ry,Ty,N); memcpy(Rz,Tz,N);
+      addProj(Tx,Ty,Tz, Rx,Ry,Rz, bx,by,Bz);
+      cx_bn_copy(Rx,Tx); cx_bn_copy(Ry,Ty); cx_bn_copy(Rz,Tz);
     }
   }
-  finv(zi,Rz); fmul(rx,Rx,zi); fmul(ry,Ry,zi);                           // affine (one inversion)
+  finv(zi,Rz); fmul(R[4],Rx,zi); fmul(R[5],Ry,zi);
+  cx_bn_export(R[4],rx32,N); cx_bn_export(R[5],ry32,N);
 }
 
-static void pow5(uint8_t *r,const uint8_t *v){ static uint8_t o[N]; fmul(o,v,v); fmul(o,o,o); fmul(r,v,o); }
+static void pow5(cx_bn_t r,const cx_bn_t v){ cx_bn_t o=R[15]; fmul(o,v,v); fmul(o,o,o); fmul(r,v,o); }
 
-// hm = Poseidon5(in0..in4)  (t=6, RF=8, RP=60)
-static void poseidon5(uint8_t *out, const uint8_t *in0,const uint8_t *in1,const uint8_t *in2,const uint8_t *in3,const uint8_t *in4){
-  static uint8_t st[6][N], ns[6][N], acc[N], tmp[N];
-  memset(st[0],0,N); memcpy(st[1],in0,N); memcpy(st[2],in1,N); memcpy(st[3],in2,N); memcpy(st[4],in3,N); memcpy(st[5],in4,N);
+// hm = Poseidon5(in0..in4) (host buffers), exported to out32. Uses R[0..14].
+static void poseidon5(uint8_t *out32, const uint8_t *in0,const uint8_t *in1,const uint8_t *in2,const uint8_t *in3,const uint8_t *in4){
+  cx_bn_t *st=&R[0], *ns=&R[6], acc=R[12], c=R[13], tmp=R[14];
+  cx_bn_set_u32(st[0],0);
+  cx_bn_init(st[1],in0,N); cx_bn_init(st[2],in1,N); cx_bn_init(st[3],in2,N); cx_bn_init(st[4],in3,N); cx_bn_init(st[5],in4,N);
   for (int x = 0; x < POSEIDON_NROUNDS; x++) {
+    io_seproxyhal_io_heartbeat();
     for (int y = 0; y < POSEIDON_T; y++) {
-      fadd(st[y], st[y], POSEIDON_C[x*POSEIDON_T + y]);
+      cx_bn_init(c, POSEIDON_C[x*POSEIDON_T + y], N);
+      fadd(st[y], st[y], c);
       if (x < POSEIDON_RF/2 || x >= POSEIDON_RF/2 + POSEIDON_RP) pow5(st[y], st[y]);
       else if (y == 0) pow5(st[y], st[y]);
     }
     for (int xx = 0; xx < POSEIDON_T; xx++) {
-      memset(acc,0,N);
-      for (int yy = 0; yy < POSEIDON_T; yy++) { fmul(tmp, POSEIDON_M[xx*POSEIDON_T+yy], st[yy]); fadd(acc, acc, tmp); }
-      memcpy(ns[xx], acc, N);
+      cx_bn_set_u32(acc,0);
+      for (int yy = 0; yy < POSEIDON_T; yy++) { cx_bn_init(c, POSEIDON_M[xx*POSEIDON_T+yy], N); fmul(tmp,c,st[yy]); fadd(acc,acc,tmp); }
+      cx_bn_copy(ns[xx], acc);
     }
-    for (int i = 0; i < POSEIDON_T; i++) memcpy(st[i], ns[i], N);
+    for (int i = 0; i < POSEIDON_T; i++) cx_bn_copy(st[i], ns[i]);
   }
-  memcpy(out, st[0], N);
+  cx_bn_export(st[0], out32, N);
 }
 
 static void blake2b512(uint8_t *out, const uint8_t *in, size_t len){
@@ -71,41 +85,52 @@ static void blake2b512(uint8_t *out, const uint8_t *in, size_t len){
   cx_hash_no_throw((cx_hash_t*)&h, CX_LAST, in, len, out, 64);
 }
 static void reverse32(uint8_t *b){ for (int i=0;i<16;i++){ uint8_t t=b[i]; b[i]=b[31-i]; b[31-i]=t; } }
-static void shr3_be(uint8_t *out,const uint8_t *in){ // out = in >> 3 (big-endian 32 bytes)
-  uint8_t carry=0;
-  for (int i=0;i<N;i++){ uint8_t v=in[i]; out[i]=(v>>3)|carry; carry=(uint8_t)(v<<5); }
-}
+static void shr3_be(uint8_t *out,const uint8_t *in){ uint8_t carry=0;
+  for (int i=0;i<N;i++){ uint8_t v=in[i]; out[i]=(v>>3)|carry; carry=(uint8_t)(v<<5); } }
 
-// key = raw private key bytes; msg_be32 = message_hash (big-endian field element).
-// Outputs 32-byte big-endian Ax,Ay,R8x,R8y,S.
 void unlink_sign(const uint8_t *key, size_t keylen, const uint8_t msg_be32[32],
                  uint8_t Ax[32], uint8_t Ay[32], uint8_t R8x[32], uint8_t R8y[32], uint8_t S[32]){
-  static uint8_t hash[64], sBuf[32], concat[64], rBuf[64], msgLE[32];
-  static uint8_t s[N], sShift[N], r[N], hm[N], mbn[N], tmp[N], hmod[N], smod[N];
+  uint8_t hash[64], sBuf[32], concat[64], rBuf[64], msgLE[32], sShift[32], rsc[32], hmb[32];
 
   blake2b512(hash, key, keylen);
   memcpy(sBuf, hash, 32);
-  sBuf[0]&=248; sBuf[31]&=127; sBuf[31]|=64;          // pruneBuffer (little-endian)
-  reverse32(sBuf);                                     // -> big-endian
-  memcpy(s, sBuf, 32);
-  shr3_be(sShift, s);                                  // s >> 3
-  mulPoint(Ax, Ay, PARM_B8X, PARM_B8Y, sShift);        // A = (s>>3)*Base8
+  sBuf[0]&=248; sBuf[31]&=127; sBuf[31]|=64; reverse32(sBuf);     // prune -> BE
+  shr3_be(sShift, sBuf);
 
-  memcpy(msgLE, msg_be32, 32); reverse32(msgLE);
-  memcpy(concat, hash+32, 32); memcpy(concat+32, msgLE, 32);
-  blake2b512(rBuf, concat, 64);                        // 64-byte little-endian nonce material
-  static uint8_t rBE[64], SUB64[64]; for (int i=0;i<64;i++) rBE[i]=rBuf[63-i];
-  memset(SUB64, 0, 32); memcpy(SUB64+32, PARM_SUB, 32);   // subOrder padded to 64 bytes (equal lengths)
-  cx_math_modm_no_throw(rBE, 64, SUB64, 64);           // reduce mod subOrder (result in low 32 bytes)
-  memcpy(r, rBE+32, 32);
-  mulPoint(R8x, R8y, PARM_B8X, PARM_B8Y, r);           // R8 = r*Base8
+  cx_bn_lock(N, 0);
+  cx_bn_alloc_init(&P,N,PARM_P,N); cx_bn_alloc_init(&SUB,N,PARM_SUB,N);
+  cx_bn_alloc_init(&bA,N,PARM_A,N); cx_bn_alloc_init(&bD,N,PARM_D,N);
+  cx_bn_alloc_init(&B8X,N,PARM_B8X,N); cx_bn_alloc_init(&B8Y,N,PARM_B8Y,N);
+  for (int i=0;i<NREG;i++) cx_bn_alloc(&R[i],N);
 
-  memcpy(mbn, msg_be32, 32);
-  poseidon5(hm, R8x, R8y, Ax, Ay, mbn);                // hm = Poseidon5(R8x,R8y,Ax,Ay,msg)
+  mulPoint(Ax, Ay, B8X, B8Y, sShift);                 // A = (s>>3)*Base8
+
+  memcpy(msgLE,msg_be32,32); reverse32(msgLE);
+  memcpy(concat,hash+32,32); memcpy(concat+32,msgLE,32);
+  blake2b512(rBuf,concat,64);
+  // r = LE(rBuf) mod subOrder, with 32-byte ops only (no oversized BN):
+  // value = lo + hi*2^256 ; r = (lo mod sub) + (hi mod sub)*K mod sub, K=2^256 mod sub
+  uint8_t loBE[32], hiBE[32];
+  for (int i=0;i<32;i++){ loBE[i]=rBuf[31-i]; hiBE[i]=rBuf[63-i]; }
+  cx_bn_init(R[0], loBE, N); cx_bn_init(R[1], hiBE, N);
+  cx_bn_reduce(R[2], R[0], SUB); cx_bn_reduce(R[3], R[1], SUB);   // lo mod sub, hi mod sub
+  cx_bn_init(R[4], PARM_K, N);
+  cx_bn_mod_mul(R[5], R[3], R[4], SUB);                           // hi*K mod sub
+  cx_bn_mod_add(R[0], R[5], R[2], SUB);                           // r = (hi*K + lo) mod sub
+  cx_bn_export(R[0], rsc, N);
+  mulPoint(R8x, R8y, B8X, B8Y, rsc);                  // R8 = r*Base8
+
+  poseidon5(hmb, R8x, R8y, Ax, Ay, msg_be32);         // hm
 
   // S = (r + hm*s) mod subOrder
-  memcpy(hmod, hm, N); cx_math_modm_no_throw(hmod, 32, PARM_SUB, 32);
-  memcpy(smod, s,  N); cx_math_modm_no_throw(smod, 32, PARM_SUB, 32);
-  cx_math_multm_no_throw(tmp, hmod, smod, PARM_SUB, 32);
-  cx_math_addm_no_throw(S, r, tmp, PARM_SUB, 32);
+  cx_bn_init(R[0], rsc, N);                           // r (< sub)
+  cx_bn_init(R[1], sBuf, N);                          // s (full, ~2^254 > sub)
+  cx_bn_init(R[2], hmb, N);                           // hm (< P)
+  cx_bn_reduce(R[3], R[2], SUB);                      // hm mod sub
+  cx_bn_reduce(R[6], R[1], SUB);                      // s mod sub  (operands MUST be < modulus)
+  cx_bn_mod_mul(R[4], R[3], R[6], SUB);               // (hm*s) mod sub
+  cx_bn_mod_add(R[5], R[0], R[4], SUB);               // r + hm*s mod sub
+  cx_bn_export(R[5], S, N);
+
+  cx_bn_unlock();
 }
