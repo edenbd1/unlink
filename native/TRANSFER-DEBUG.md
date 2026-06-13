@@ -1,46 +1,38 @@
-# Device-custodied transfer — open finding
+# Device-custodied transfer — RESOLVED ✅
 
-## What works (proven on hardware, base-sepolia)
-- The native Ledger app signs Unlink EdDSA-Poseidon **byte-exact** vs the SDK
-  (`signMessage(sk, 42)` == vector 0 `S`; `verifySignature` returns `true` for
-  device signatures).
-- A full account is reconstructed host-side from the device exports
-  (spending **public** key + viewing key) — `address`/`nullifyingKey` match
-  `account.fromSeed` exactly. The spending private key never leaves the SE.
-- The device account **registers** on the live backend.
-- A real on-chain **deposit** (`depositWithApproval`) funds it — balance observed
-  at 2 USDC, deposits `processed`.
-- During `client.transfer` the device signs the prepared request and the
-  signature **verifies locally and via the SDK's own `verifySignature`**.
+## Resolution
+A device-signed private transfer now completes end-to-end on the live Unlink
+backend (base-sepolia): status **`processed`**, balance debited. The
+spending key never left the Secure Element.
 
-## What fails
-`client.transfer` from the device account ends `failed` **engine-side**, right
-after a valid signature, with **no status progression** (`onStatus` never fires)
-and **no error reason** exposed by `getTransactions`.
+```
+transfer  processed  22:47:57   (txId 2f1e5fa2-41ac-4090-9432-2cbd56d0aa12)
+balance: 2.0 USDC -> 1.5 USDC   (0.5 sent, device-signed)
+```
 
-## Why it is NOT the device
-A control run with a **pure SDK software account** (`account.fromSeed`), same
-environment, same funding wallet, same recipient pattern:
-- transfer status → **`processed`** (completed), balance 1 USDC → 0.5 USDC.
+## Root cause — it was SPEED, not crypto
+The signature was always correct (SDK `verifySignature` = true, byte-exact vs
+`signMessage`). The transfer failed because the **device took 65 s to sign**, and
+Unlink's engine has a validity window between `prepare` and `submit`. The
+prepared transaction expired before the signature came back → `failed`.
 
-So the backend/relayer path works. The device signature is valid by every
-available measure. The only variable is that the account's spending key is
-device-custodied (signature-only, no host-side private key).
+Proof: injecting a 65 s delay before submit made a **pure SDK software account**
+(which normally succeeds) fail with the *exact same* error. A 30 s delay
+succeeded. So the threshold sits between 30 s and 65 s.
 
-## Hypotheses left to check (need Unlink relayer logs)
-1. The relayer/prover rejects the proof for a reason not surfaced to the client
-   (e.g. an input-witness it expects beyond the EdDSA signature).
-2. The device account's note set is in a bad state from earlier failed attempts
-   (though deposits show `processed` and balance is non-zero).
-3. A subtle mismatch in how the registered `spendingPublicKey` / `nullifyingKey`
-   feed the transfer circuit vs a seed-derived account.
+## Fix — fixed-base comb (65 s → 26 s)
+Both scalar muls (A and R8) use the same constant base B8, so we replaced the
+256-doubling double-and-add with a **Lim-Lee fixed-base comb** (h=8, d=32):
+32 doublings + ≤32 mixed adds, table precomputed host-side
+(`src/unlink_comb.h`, 256 points, validated `comb_mul == k·B8`). Also added a
+dedicated twisted-Edwards **doubling** formula (`dblProj`).
 
-## Failed device-account transfer tx IDs (for relayer-log lookup)
-- `e833c8eb-3dfb-4ee9-a6e5-750885939b47`
-- `839f35a8-b887-415a-a343-9693e43bd878`
+Subtle gotcha (same SE class as before): the first `dblProj` had an
+`fmul(Y3, F, Y3)` — output aliases the *second* operand (`r == b`), which the SE
+miscomputes. Rewrote so every `fmul` output is distinct from its inputs. After
+that the comb signature verifies byte-exact and signing is 26 s — under the
+engine window — and the transfer is accepted and processed.
 
-Device account address:
-`unlink1qqjst0404jv4t887l02dtgyqj929lm3kuws44uvyapa5s4hsjzudlzg2czep8n6jdsu7x5ep4qgsr0xcmt5ulvm7femt5kk87mze3aar3xx90d`
-
-Reproduce: `node --env-file=.env native/host/device-wallet-demo.mjs` (keep the
-device unlocked and the Unlink app open to avoid the 0x5515 auto-lock).
+## Takeaway
+The native Ledger app signs Unlink in ~26 s, and a private transfer custodied
+entirely by the device works end-to-end on the real network.

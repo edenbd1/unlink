@@ -8,6 +8,7 @@
 #include "os_io_seproxyhal.h"
 #include "unlink_crypto.h"
 #include "unlink_params.h"
+#include "unlink_comb.h"
 
 #define N 32
 #define NREG 17
@@ -36,23 +37,47 @@ static void addProj(cx_bn_t X3,cx_bn_t Y3,cx_bn_t Z3,
   fmul(Z3,F,G);
 }
 
-// out = (e·base) affine, exported to rx32/ry32. base passed as cx_bn (bx,by).
-// Uses R[0..9] (addProj uses R[10..16]).
-static void mulPoint(uint8_t *rx32,uint8_t *ry32,const cx_bn_t bx,const cx_bn_t by,const uint8_t *e){
-  cx_bn_t Rx=R[0],Ry=R[1],Rz=R[2],Bz=R[3],Tx=R[6],Ty=R[7],Tz=R[8],zi=R[9];
+// Projective dedicated doubling (twisted Edwards dbl-2008-bbjlp). Outputs
+// X3,Y3,Z3; scratch = R[10..16]. ~8 muls vs ~13 for the unified add — the inner
+// loop runs this 256x per scalar mul, so it dominates the sign time.
+static void dblProj(cx_bn_t X3,cx_bn_t Y3,cx_bn_t Z3,
+                    const cx_bn_t X1,const cx_bn_t Y1,const cx_bn_t Z1){
+  cx_bn_t B=R[10],C=R[11],D=R[12],E=R[13],F=R[14],H=R[15],J=R[16];
+  fadd(E,X1,Y1); fmul(B,E,E);          // B=(X1+Y1)^2  (square: r!=a, a==b — SE-safe)
+  fmul(C,X1,X1); fmul(D,Y1,Y1);        // C=X1^2  D=Y1^2
+  fmul(E,bA,C); fadd(F,E,D);           // E=a*C   F=E+D
+  fmul(H,Z1,Z1); fadd(J,H,H); fsub(J,F,J);   // H=Z1^2  J=F-2H
+  fsub(H,B,C); fsub(H,H,D); fmul(X3,H,J);    // X3=(B-C-D)*J  (H reused as temp; r!=a,b)
+  fsub(B,E,D); fmul(Y3,F,B);           // Y3=F*(E-D)         (B reused as temp; r!=a,b)
+  fmul(Z3,F,J);                        // Z3=F*J             (r!=a,b)
+}
+
+// out = (e·B8) affine via the fixed-base comb (h=8, d=32): 32 doublings + up to
+// 32 mixed adds instead of 256 doublings + ~128 adds. ~6-7x faster than mulPoint.
+// Uses R[0..9] for the running point/base; addProj/dblProj use R[10..16].
+static void combMulBase(uint8_t *rx32,uint8_t *ry32,const uint8_t *e){
+  cx_bn_t Rx=R[0],Ry=R[1],Rz=R[2],Bz=R[3],Gx=R[4],Gy=R[5],Tx=R[6],Ty=R[7],Tz=R[8],zi=R[9];
+  uint8_t buf[N];
   cx_bn_set_u32(Rx,0); cx_bn_set_u32(Ry,1); cx_bn_set_u32(Rz,1);   // identity
   cx_bn_set_u32(Bz,1);
-  for (int i = 255; i >= 0; i--) {
-    if ((i & 7) == 0) io_seproxyhal_io_heartbeat();
-    addProj(Tx,Ty,Tz, Rx,Ry,Rz, Rx,Ry,Rz);
+  for (int col = 31; col >= 0; col--) {
+    io_seproxyhal_io_heartbeat();
+    dblProj(Tx,Ty,Tz, Rx,Ry,Rz);
     cx_bn_copy(Rx,Tx); cx_bn_copy(Ry,Ty); cx_bn_copy(Rz,Tz);
-    if ((e[N-1-(i>>3)] >> (i&7)) & 1) {
-      addProj(Tx,Ty,Tz, Rx,Ry,Rz, bx,by,Bz);
+    int idx = 0;
+    for (int j = 0; j < 8; j++) {                 // gather one bit from each 32-bit block
+      int p = j*32 + col;
+      idx |= (((e[N-1-(p>>3)] >> (p&7)) & 1) << j);
+    }
+    if (idx) {
+      memcpy(buf, COMB_X[idx], N); cx_bn_init(Gx, buf, N);
+      memcpy(buf, COMB_Y[idx], N); cx_bn_init(Gy, buf, N);
+      addProj(Tx,Ty,Tz, Rx,Ry,Rz, Gx,Gy,Bz);
       cx_bn_copy(Rx,Tx); cx_bn_copy(Ry,Ty); cx_bn_copy(Rz,Tz);
     }
   }
-  finv(zi,Rz); fmul(R[4],Rx,zi); fmul(R[5],Ry,zi);
-  cx_bn_export(R[4],rx32,N); cx_bn_export(R[5],ry32,N);
+  finv(zi,Rz); fmul(Gx,Rx,zi); fmul(Gy,Ry,zi);
+  cx_bn_export(Gx,rx32,N); cx_bn_export(Gy,ry32,N);
 }
 
 static void pow5(cx_bn_t r,const cx_bn_t v){ cx_bn_t o=R[15],o2=R[14]; fmul(o,v,v); fmul(o2,o,o); fmul(r,v,o2); } // o2 avoids cx_bn_mod_mul(r,a,a) with r==a==b (broken on SE)
@@ -103,7 +128,7 @@ void unlink_sign(const uint8_t *key, size_t keylen, const uint8_t msg_be32[32],
   cx_bn_alloc_init(&B8X,N,PARM_B8X,N); cx_bn_alloc_init(&B8Y,N,PARM_B8Y,N);
   for (int i=0;i<NREG;i++) cx_bn_alloc(&R[i],N);
 
-  mulPoint(Ax, Ay, B8X, B8Y, sShift);                 // A = (s>>3)*Base8
+  combMulBase(Ax, Ay, sShift);                        // A = (s>>3)*Base8
 
   memcpy(msgLE,msg_be32,32); reverse32(msgLE);
   memcpy(concat,hash+32,32); memcpy(concat+32,msgLE,32);
@@ -118,7 +143,7 @@ void unlink_sign(const uint8_t *key, size_t keylen, const uint8_t msg_be32[32],
   cx_bn_mod_mul(R[5], R[3], R[4], SUB);                           // hi*K mod sub
   cx_bn_mod_add(R[0], R[5], R[2], SUB);                           // r = (hi*K + lo) mod sub
   cx_bn_export(R[0], rsc, N);
-  mulPoint(R8x, R8y, B8X, B8Y, rsc);                  // R8 = r*Base8
+  combMulBase(R8x, R8y, rsc);                         // R8 = r*Base8
 
   poseidon5(hmb, R8x, R8y, Ax, Ay, msg_be32);         // hm
 
@@ -154,7 +179,7 @@ void unlink_pubkey(const uint8_t *key, size_t keylen, uint8_t Ax[32], uint8_t Ay
   shr3_be(sShift, sBuf);
   cx_bn_lock(N, 0);
   bn_setup();
-  mulPoint(Ax, Ay, B8X, B8Y, sShift);
+  combMulBase(Ax, Ay, sShift);
   cx_bn_unlock();
 }
 

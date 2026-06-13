@@ -103,7 +103,7 @@ try {
   });
   log("  transfer submitted:", JSON.stringify(handle)?.slice(0, 200));
   await new Promise((r) => setTimeout(r, 8000));
-  await showBalances("balances (after transfer)");
+  log("  balance (after transfer):", (await balanceOf()).toString());
   log("\n✅ device-signed private transfer executed — spending key stayed in the SE.");
 } catch (e) {
   log("  transfer error:", String(e.message || e));
