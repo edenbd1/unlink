@@ -2,7 +2,7 @@ import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createCustodiedSeed, decryptSeed, hasCustodiedSeed } from "../companion/gpg-custody.ts";
-import { openSession, getBalances, privateTransfer, faucet, type Session } from "../companion/unlink.ts";
+import { openSession, getBalances, privateTransfer, faucet, depositFromWallet, type Session } from "../companion/unlink.ts";
 import * as fido2 from "./fido2.ts";
 import { propose } from "./copilot.ts";
 
@@ -36,6 +36,11 @@ app.get("/api/balance", c => json(c, async () => ({ balances: await getBalances(
 app.post("/api/faucet", c => json(c, async () => {
   const { token, amount } = await c.req.json();
   return { result: await faucet(requireSession(), token, amount) };
+}));
+// Fund the private account from a configured EVM wallet (approve + deposit).
+app.post("/api/deposit", c => json(c, async () => {
+  const { token, amount } = await c.req.json();
+  return { result: await depositFromWallet(requireSession(), token, amount) };
 }));
 
 // --- Co-pilot proposal (proposes only) ---

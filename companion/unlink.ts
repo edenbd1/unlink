@@ -2,10 +2,16 @@
 // the Unlink account: account.fromSeed keeps execute(). Verified flow: register
 // the account with the tenant -> issue authorization tokens -> balances/transfer.
 import { createUnlinkAdmin } from "@unlink-xyz/sdk/admin";
-import { account, createUnlinkClient } from "@unlink-xyz/sdk/client";
+import { account, createUnlinkClient, evm } from "@unlink-xyz/sdk/client";
+import { createWalletClient, createPublicClient, http } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { baseSepolia } from "viem/chains";
 
 const ENVIRONMENT = process.env.UNLINK_ENVIRONMENT || "base-sepolia";
 const API_KEY = process.env.UNLINK_API_KEY || "";
+// Optional funding wallet: lets a user top up their private account from any EVM
+// wallet (deposit into the unlink contract, crediting the custodied account).
+const FUNDING_PK = process.env.FUNDING_PRIVATE_KEY || "";
 
 export type Session = {
   client: ReturnType<typeof createUnlinkClient>;
@@ -24,9 +30,22 @@ export async function openSession(seed: Uint8Array): Promise<Session> {
   // Register before issuing tokens (verified order: pass the account).
   await admin.users.register(await account.toRegistrationPayload(acct));
 
+  // If a funding wallet is configured, attach it so deposits can credit this account.
+  const evmProvider = FUNDING_PK
+    ? evm.fromViem({
+        walletClient: createWalletClient({
+          account: privateKeyToAccount(FUNDING_PK as `0x${string}`),
+          chain: baseSepolia,
+          transport: http(),
+        }),
+        publicClient: createPublicClient({ chain: baseSepolia, transport: http() }),
+      })
+    : undefined;
+
   const client = createUnlinkClient({
     environment: ENVIRONMENT,
     account: acct,
+    ...(evmProvider ? { evm: evmProvider } : {}),
     authorizationToken: {
       provider: async ({ unlinkAddress }: { unlinkAddress: string }) =>
         admin.authorizationTokens.issue({ unlinkAddress }),
@@ -36,6 +55,12 @@ export async function openSession(seed: Uint8Array): Promise<Session> {
   });
 
   return { client, admin, address };
+}
+
+// Fund the private account from the configured EVM wallet (approve + deposit).
+export async function depositFromWallet(s: Session, token: string, amount: string) {
+  if (!FUNDING_PK) throw new Error("no FUNDING_PRIVATE_KEY configured");
+  return (s.client as any).depositWithApproval({ token, amount });
 }
 
 export async function getBalances(s: Session) {
