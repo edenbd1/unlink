@@ -45,7 +45,13 @@ def verify(Ax,Ay,R8x,R8y,S,msg):
     rhs=padd((R8x,R8y), smul((8*hm)%order,(Ax,Ay)))
     oncurve=(A*Ax*Ax+Ay*Ay - (1+D*Ax*Ax*Ay*Ay))%P==0
     return lhs==rhs, oncurve, hm
+def _toint(s): return int(s,16) if s.lower().startswith("0x") else int(s)
 if __name__=="__main__":
+    # CLI: verify.py Ax Ay R8x R8y S msg  (decimal or 0x-hex) -> prints, exits 0 if valid
+    if len(sys.argv)==7:
+        a=[_toint(x) for x in sys.argv[1:7]]
+        ok,oc,_=verify(a[0],a[1],a[2],a[3],a[4],a[5])
+        print("verify=%s on_curve=%s"%(ok,oc)); sys.exit(0 if ok and oc else 1)
     # vector 0 sanity
     v=dict(Ax=0x111ad6eaff70758b7ad109a32526c54ae58eff19a8667f0b41b8c228f86588ee,
            Ay=0x1810293488974f0ae2d566a860d00c5bd24fc094b076e260e3b9b65b0555fb92,
