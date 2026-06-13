@@ -1,62 +1,35 @@
-/*****************************************************************************
- *   Ledger App Boilerplate.
- *   (c) 2020 Ledger SAS.
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- *****************************************************************************/
+// Unlink native signer — validation handler.
+// On GET_PUBLIC_KEY, sign a fixed message with a fixed test key entirely on the
+// Secure Element and return Ax|Ay|R8x|R8y|S (160 bytes). Compared byte-exact to
+// the reference @zk-kit/eddsa-poseidon signer. (Production: derive key from seed.)
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
 
-#include <stdint.h>   // uint*_t
-#include <stdbool.h>  // bool
-#include <stddef.h>   // size_t
-#include <string.h>   // memset, explicit_bzero
-
-#include "os.h"
-#include "cx.h"
 #include "io.h"
 #include "buffer.h"
-#include "crypto_helpers.h"
-
-#include "get_public_key.h"
-#include "globals.h"
-#include "types.h"
 #include "sw.h"
-#include "display.h"
-#include "send_response.h"
+#include "get_public_key.h"
+#include "../unlink_crypto.h"
 
 int handler_get_public_key(buffer_t *cdata, bool display) {
-    explicit_bzero(&G_context, sizeof(G_context));
-    G_context.req_type = CONFIRM_ADDRESS;
-    G_context.state = STATE_NONE;
+    (void) cdata;
+    (void) display;
 
-    if (!buffer_read_u8(cdata, &G_context.bip32_path_len) ||
-        !buffer_read_bip32_path(cdata, G_context.bip32_path, (size_t) G_context.bip32_path_len)) {
-        return io_send_sw(SWO_WRONG_DATA_LENGTH);
-    }
+    // 32-byte test key = ASCII "unlink-ledger-native-signer-test"
+    static const uint8_t key[32] = "unlink-ledger-native-signer-test";
+    uint8_t msg[32] = {0};
+    msg[31] = 42;  // message_hash = field element 42 (big-endian)
 
-    cx_err_t error = bip32_derive_get_pubkey_256(CX_CURVE_256K1,
-                                                 G_context.bip32_path,
-                                                 G_context.bip32_path_len,
-                                                 G_context.pk_info.raw_public_key,
-                                                 G_context.pk_info.chain_code,
-                                                 CX_SHA512);
+    uint8_t Ax[32], Ay[32], R8x[32], R8y[32], S[32];
+    unlink_sign(key, 32, msg, Ax, Ay, R8x, R8y, S);
 
-    if (error != CX_OK) {
-        return io_send_sw(error);
-    }
+    uint8_t resp[160];
+    memcpy(resp + 0, Ax, 32);
+    memcpy(resp + 32, Ay, 32);
+    memcpy(resp + 64, R8x, 32);
+    memcpy(resp + 96, R8y, 32);
+    memcpy(resp + 128, S, 32);
 
-    if (display) {
-        return ui_display_address();
-    }
-
-    return helper_send_response_pubkey();
+    return io_send_response_pointer(resp, sizeof(resp), SWO_SUCCESS);
 }

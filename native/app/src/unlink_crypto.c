@@ -41,18 +41,17 @@ static void addPoint(cx_bn_t rx,cx_bn_t ry,const cx_bn_t x1,const cx_bn_t y1,con
 
 // R = e·(bx,by) double-and-add (matches mulPointEscalar)
 static void mulPoint(cx_bn_t rx,cx_bn_t ry,const cx_bn_t bx,const cx_bn_t by,const cx_bn_t e){
-  cx_bn_t resx,resy,ex,ey,rem,nx,ny; bool bit; uint32_t deg;
+  cx_bn_t resx,resy,ex,ey,rem,nx,ny; bool bit; int diff;
   cx_bn_alloc(&resx,32);cx_bn_alloc(&resy,32);cx_bn_alloc(&ex,32);cx_bn_alloc(&ey,32);
   cx_bn_alloc(&rem,32);cx_bn_alloc(&nx,32);cx_bn_alloc(&ny,32);
   cx_bn_set_u32(resx,0); cx_bn_set_u32(resy,1); cx_bn_copy(ex,bx); cx_bn_copy(ey,by); cx_bn_copy(rem,e);
   for(;;){
-    cx_bn_is_zero(rem,&bit); if(bit) break;
+    cx_bn_cmp_u32(rem,0,&diff); if(diff==0) break;
     cx_bn_tst_bit(rem,0,&bit);
     if(bit){ addPoint(nx,ny,resx,resy,ex,ey); cx_bn_copy(resx,nx); cx_bn_copy(resy,ny); }
     addPoint(nx,ny,ex,ey,ex,ey); cx_bn_copy(ex,nx); cx_bn_copy(ey,ny);
     cx_bn_shr(rem,1);
   }
-  (void)deg;
   cx_bn_copy(rx,resx); cx_bn_copy(ry,resy);
   cx_bn_destroy(&resx);cx_bn_destroy(&resy);cx_bn_destroy(&ex);cx_bn_destroy(&ey);
   cx_bn_destroy(&rem);cx_bn_destroy(&nx);cx_bn_destroy(&ny);
