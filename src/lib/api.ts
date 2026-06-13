@@ -13,6 +13,7 @@ export const api = {
   lock: () => j("/api/custody/lock", {}),
   balance: () => j("/api/balance"),
   faucet: (token: string, amount: string) => j("/api/faucet", { token, amount }),
+  deposit: (token: string, amount: string) => j("/api/deposit", { token, amount }),
   propose: (recipientAddress?: string) => j("/api/copilot/propose", { recipientAddress }),
   fido2RegOptions: () => j("/api/fido2/register/options", {}),
   fido2RegVerify: (response: any) => j("/api/fido2/register/verify", response),

@@ -32,11 +32,11 @@ export default function App() {
 
   const create = wrap("create", async () => { await api.create(); say("Seed generated and encrypted to your Ledger (OpenPGP)."); await refresh(); });
   const unlock = wrap("unlock", async () => {
-    say("Asking the Ledger to decrypt the seed… (confirm on device)");
-    const d = await api.unlock(); setAddress(d.address); say("Unlocked. The seed lives in memory only."); await refresh(); await loadBalance();
+    say("Asking your Ledger to decrypt the seed… confirm on the device.");
+    const d = await api.unlock(); setAddress(d.address); say("Unlocked by your Ledger. The seed lives in memory only."); await refresh(); await loadBalance();
   });
   const lock = wrap("lock", async () => { await api.lock(); setAddress(""); setBalances([]); setProposal(null); say("Locked. Only ciphertext remains at rest."); await refresh(); });
-  const faucet = wrap("faucet", async () => { await api.faucet(USDC, "5000000"); say("Requested private test USDC."); setTimeout(loadBalance, 1500); });
+  const fund = wrap("fund", async () => { say("Depositing 1 USDC into your private account…"); await api.deposit(USDC, "1000000"); say("Deposited. Indexing private balance…"); setTimeout(loadBalance, 4000); });
 
   const enroll = wrap("enroll", async () => {
     const { options } = await api.fido2RegOptions();
@@ -86,7 +86,7 @@ export default function App() {
       <section className="card" data-off={!status?.unlocked}>
         <h2>2 · Private balance</h2>
         <div className="row"><button className="ghost" onClick={wrap("balance", loadBalance)} disabled={!status?.unlocked || !!busy}>Refresh</button>
-          <button className="ghost" onClick={faucet} disabled={!status?.unlocked || !!busy}>Get private test USDC</button></div>
+          <button className="ghost" onClick={fund} disabled={!status?.unlocked || !!busy}>Deposit 1 USDC (private)</button></div>
         {balances.length === 0 ? <p className="muted">No private balance yet.</p> :
           <ul className="bal">{balances.map((b, i) => <li key={i}><b>{b.symbol || b.token}</b><span>{b.amount}</span></li>)}</ul>}
       </section>
