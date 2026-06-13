@@ -10,3 +10,4 @@ native/host/signer
 native/app/build/
 native/app/bin/
 native/app/debug/
+native/app/bld.txt
