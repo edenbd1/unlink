@@ -27,6 +27,20 @@ npm run dev:all          # web :3000 + local companion :8787
 ```
 
 On the Ledger (Ledger Live → My Ledger, developer mode): install **OpenPGP** and
-**Security Key** apps.
+**Security Key** apps. To top up the private account from an EVM wallet, set
+`FUNDING_PRIVATE_KEY` in `.env` (a testnet wallet holding USDC).
+
+## Test
+
+```bash
+npm run test     # spins up a software OpenPGP key + FIDO2 authenticator, then
+                 # drives the running server end-to-end against the live engine
+```
+
+The end-to-end test exercises the whole flow without hardware: a software
+ed25519/cv25519 GPG key stands in for the Ledger OpenPGP app, a software P-256
+authenticator stands in for the Security Key. It proves: deterministic unlock,
+a real on-chain USDC deposit, the FIDO2 gate (rejects no-tap and replays), and a
+private transfer that only executes after a valid tap.
 
 Built at ETHGlobal NYC 2026.
