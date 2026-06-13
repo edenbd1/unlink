@@ -11,3 +11,4 @@ native/app/build/
 native/app/bin/
 native/app/debug/
 native/app/bld.txt
+native/host/.device-keys.json

@@ -21,6 +21,7 @@ const log = (...a) => console.log(...a);
 
 log("→ assembling the device account…");
 const acct = await buildDeviceAccount();
+log("  keys:", acct.fromCache ? "from host cache (Ledger not needed yet)" : "read from device (now cached)");
 log("  address:", acct.address);
 
 const admin = createUnlinkAdmin({ environment: ENVIRONMENT, apiKey: API_KEY });

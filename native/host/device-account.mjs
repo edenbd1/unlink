@@ -7,6 +7,9 @@
 //   masterPublicKey  = poseidon3([Ax, Ay, nullifyingKey])
 //   address          = bech32m("unlink", [0] ++ BE32(masterPublicKey) ++ viewingPubKey)
 // Signing is delegated to the device (deviceSignSigningRequest = SignSigningRequestFn).
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { bech32m } from "@scure/base";
 import { poseidon1, poseidon3 } from "poseidon-lite";
@@ -15,6 +18,14 @@ import { getDeviceSpendingPublicKey, deviceSignSigningRequest } from "./device-s
 const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const HRP = "unlink";
 const VERSION = 0;
+
+// Cache for the CONSTANT device-exported material (spending PUBLIC key + viewing
+// key). Read once from the device, then reused so the Ledger app only needs to be
+// open for the actual approve+sign of a transfer — never just to rebuild the
+// account. The viewing key is a read capability (it never grants spend authority,
+// which stays in the Secure Element). Gitignored; delete the file to force a
+// re-read, or set DEVICE_NO_CACHE=1.
+const CACHE = join(dirname(fileURLToPath(import.meta.url)), ".device-keys.json");
 
 const mod = (x) => ((x % FIELD) + FIELD) % FIELD;
 const bytesToBigInt = (b) => BigInt("0x" + Buffer.from(b).toString("hex"));
@@ -34,11 +45,34 @@ export function buildRegistration(spendingPublicKey, viewingPrivateKey) {
   return { address, spendingPublicKey, viewingPrivateKey, nullifyingKey };
 }
 
-// Full device account: registration material + the device-backed spend signer.
-export async function buildDeviceAccount() {
-  const spendingPublicKey = await getDeviceSpendingPublicKey();
+// Read the constant key material — from the host cache if present, otherwise
+// from the device (then cached). Pass {fresh:true} or DEVICE_NO_CACHE=1 to skip.
+async function loadKeyMaterial(opts = {}) {
+  const useCache = !opts.fresh && process.env.DEVICE_NO_CACHE !== "1";
+  if (useCache && existsSync(CACHE)) {
+    const c = JSON.parse(readFileSync(CACHE, "utf8"));
+    return {
+      spendingPublicKey: [BigInt(c.spendingPublicKey[0]), BigInt(c.spendingPublicKey[1])],
+      viewingPrivateKey: Uint8Array.from(Buffer.from(c.viewingPrivateKey, "hex")),
+      fromCache: true,
+    };
+  }
+  const spendingPublicKey = await getDeviceSpendingPublicKey();   // opens the app once
   const viewingPrivateKey = await getDeviceViewingPrivateKey();
+  writeFileSync(CACHE, JSON.stringify({
+    spendingPublicKey: [spendingPublicKey[0].toString(), spendingPublicKey[1].toString()],
+    viewingPrivateKey: Buffer.from(viewingPrivateKey).toString("hex"),
+  }, null, 2));
+  return { spendingPublicKey, viewingPrivateKey, fromCache: false };
+}
+
+// Full device account: registration material + the device-backed spend signer.
+// Key material is cached host-side, so after the first run the Ledger app is only
+// needed to approve+sign a transfer (not to rebuild the account).
+export async function buildDeviceAccount(opts = {}) {
+  const { spendingPublicKey, viewingPrivateKey, fromCache } = await loadKeyMaterial(opts);
   const reg = buildRegistration(spendingPublicKey, viewingPrivateKey);
+  reg.fromCache = fromCache;
   return {
     ...reg,
     // UnlinkSpendSigner + registration provider, duck-typed for the SDK.
