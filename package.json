@@ -1,0 +1,12 @@
+{
+  "name": "unlink-ledger-custody",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Unlink — private transactions where your seed lives encrypted in your Ledger (OpenPGP), and every move needs a physical tap (Security Key).",
+  "scripts": {
+    "dev": "vite --port 3000",
+    "server": "node --env-file=.env --experimental-strip-types server/index.ts",
+    "dev:all": "concurrently -n web,api -c magenta,cyan \"vite --port 3000\" \"npm run server\""
+  }
+}
