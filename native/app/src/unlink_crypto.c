@@ -137,27 +137,50 @@ void unlink_sign(const uint8_t *key, size_t keylen, const uint8_t msg_be32[32],
   cx_bn_unlock();
 }
 
-// DEBUG: round-0 SBOX + MIX, export ns[0..5] (state after one full round).
-void unlink_poseidon_test(uint8_t out[192], int nr){ (void)nr;
-  uint8_t cbuf[N];
-  cx_bn_lock(N,0);
-  cx_bn_alloc_init(&P,N,PARM_P,N);
-  for(int i=0;i<NREG;i++) cx_bn_alloc(&R[i],N);
-  cx_bn_t *st=&R[0], *ns=&R[6], acc=R[12], c=R[13], tmp=R[14];
-  cx_bn_set_u32(st[0],0); for(int y=1;y<6;y++) cx_bn_set_u32(st[y],y);
-  for(int y=0;y<6;y++){
-    memcpy(cbuf,POSEIDON_C[y],N); cx_bn_init(c,cbuf,N);
-    cx_bn_mod_add(R[16],st[y],c,P); cx_bn_copy(st[y],R[16]);
-    pow5(st[y],st[y]);
-  }
-  for(int xx=0;xx<6;xx++){
-    cx_bn_set_u32(acc,0);
-    for(int yy=0;yy<6;yy++){
-      memcpy(cbuf,POSEIDON_M[xx*6+yy],N); cx_bn_init(c,cbuf,N);
-      fmul(tmp,c,st[yy]); cx_bn_mod_add(R[16],acc,tmp,P); cx_bn_reduce(acc,R[16],P);
-    }
-    cx_bn_copy(ns[xx],acc);
-  }
-  for(int i=0;i<6;i++) cx_bn_export(ns[i], out+i*32, N);
+// Allocate the persistent modulus/params/base BNs + scratch register file.
+static void bn_setup(void){
+  cx_bn_alloc_init(&P,N,PARM_P,N); cx_bn_alloc_init(&SUB,N,PARM_SUB,N);
+  cx_bn_alloc_init(&bA,N,PARM_A,N); cx_bn_alloc_init(&bD,N,PARM_D,N);
+  cx_bn_alloc_init(&B8X,N,PARM_B8X,N); cx_bn_alloc_init(&B8Y,N,PARM_B8Y,N);
+  for (int i=0;i<NREG;i++) cx_bn_alloc(&R[i],N);
+}
+
+// A = (s>>3)*Base8 only — for GET_PUBLIC_KEY (one scalar-mul, no Poseidon).
+void unlink_pubkey(const uint8_t *key, size_t keylen, uint8_t Ax[32], uint8_t Ay[32]){
+  uint8_t hash[64], sBuf[32], sShift[32];
+  blake2b512(hash, key, keylen);
+  memcpy(sBuf, hash, 32);
+  sBuf[0]&=248; sBuf[31]&=127; sBuf[31]|=64; reverse32(sBuf);
+  shr3_be(sShift, sBuf);
+  cx_bn_lock(N, 0);
+  bn_setup();
+  mulPoint(Ax, Ay, B8X, B8Y, sShift);
   cx_bn_unlock();
+}
+
+// 32-byte big-endian value -> decimal ASCII (repeated divide-by-10). Returns length.
+static size_t be32_to_dec(const uint8_t in[32], char *out){
+  uint8_t v[32]; memcpy(v, in, 32);
+  char tmp[80]; int n = 0;
+  for (;;) {
+    int rem = 0, nz = 0;
+    for (int i = 0; i < 32; i++) {
+      int cur = (rem << 8) | v[i];
+      v[i] = (uint8_t)(cur / 10); rem = cur % 10;
+      if (v[i]) nz = 1;
+    }
+    tmp[n++] = (char)('0' + rem);
+    if (!nz) break;            // v is now zero
+  }
+  for (int i = 0; i < n; i++) out[i] = tmp[n - 1 - i];
+  return (size_t) n;
+}
+
+size_t unlink_derive_key(char out[80]){
+  uint8_t node[32];
+  const uint32_t path[5] = {0x8000002C, 0x80000001, 0x80000000, 0, 0}; // m/44'/1'/0'/0/0
+  os_perso_derive_node_bip32(CX_CURVE_256K1, path, 5, node, NULL);
+  size_t n = be32_to_dec(node, out);
+  explicit_bzero(node, sizeof(node));
+  return n;
 }
