@@ -15,6 +15,7 @@ import { createWalletClient, createPublicClient, http, encodeFunctionData } from
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import { buildDeviceAccount, reviewIntentOnDevice, connectApproveOnDevice } from "../host/device-account.mjs";
+import { ledgerEthClients, getLedgerEthAddress } from "../host/ledger-eth-account.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env.UNLINK_ENVIRONMENT || "base-sepolia";
@@ -79,6 +80,31 @@ app.post("/api/deposit", async (c) => {
     if (!approved) return c.json({ error: "deposit rejected on device" }, 400);
     await S.client.depositWithApproval({ token: USDC, amount });
     return c.json({ ok: true, note: `shielded ${human(amount)} into the pool`, balances: await balanceList() });
+  } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
+});
+
+// The Ledger's own Ethereum address (where you hold USDC to shield).
+app.get("/api/eth-address", async (c) => {
+  try { return c.json({ address: await getLedgerEthAddress() }); }
+  catch (e) { return c.json({ error: String(e.message || e) }, 500); }
+});
+
+// Shield USDC straight FROM the Ledger's ETH address into the pool. The Ledger
+// Ethereum app signs the Permit2 deposit (and the one-time Permit2 approval).
+// Requires: Ethereum app open, blind signing ON, USDC (+ a little ETH) on the address.
+app.post("/api/shield-ledger", async (c) => {
+  if (!S) return c.json({ error: "not connected" }, 400);
+  const { amount = "1000000" } = await c.req.json().catch(() => ({}));
+  try {
+    const { walletClient, publicClient, address: ethAddr } = await ledgerEthClients();
+    const ledgerEvm = evm.fromViem({ walletClient, publicClient });
+    const client = createUnlinkClient({
+      environment: ENV, account: S.account, evm: ledgerEvm,
+      authorizationToken: { provider: async ({ unlinkAddress }) => S.admin.authorizationTokens.issue({ unlinkAddress }) },
+      register: async () => S.admin.users.register(await S.account.getRegistrationPayload()),
+    });
+    await client.depositWithApproval({ token: USDC, amount });
+    return c.json({ ok: true, note: `shielded ${human(amount)} from Ledger ${shortAddr(ethAddr)}`, balances: await balanceList() });
   } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
 });
 

@@ -52,8 +52,14 @@
     <div class="row" style="margin-top:12px">
       <input id="depAmt" value="1" /> <span class="muted">USDC</span>
       <button class="ghost" id="bDeposit" onclick="deposit()" disabled>Shield into pool</button>
-      <span class="pill ledger">Ledger approve</span>
+      <span class="pill ledger">Ledger approve (Unlink app)</span>
     </div>
+    <div class="row" style="margin-top:12px">
+      <input id="shieldAmt" value="1" /> <span class="muted">USDC</span>
+      <button class="ghost" id="bShield" onclick="shieldLedger()" disabled>Shield from Ledger</button>
+      <span class="pill ledger">Ethereum app · signs Permit2</span>
+    </div>
+    <div class="addr" id="ethAddr"></div>
   </div>
 
   <div class="card">
@@ -78,7 +84,8 @@ const $ = (id) => document.getElementById(id);
 const log = (m, cls="") => { const li=document.createElement("li"); li.innerHTML=cls?`<span class="${cls}">${m}</span>`:m; $("log").prepend(li); };
 const u = (usdc) => String(Math.round(Number(usdc)*1e6));
 let busy=false;
-function setBusy(b){ busy=b; ["bConnect","bDeposit","bTransfer","bExecute"].forEach(id=>$(id).disabled = b || (id!=="bConnect" && !window.connected)); }
+function setBusy(b){ busy=b; ["bConnect","bDeposit","bTransfer","bExecute","bShield"].forEach(id=>$(id).disabled = b || (id!=="bConnect" && !window.connected)); }
+async function ethAddr(){ try{ const r=await fetch("/api/eth-address",{method:"GET"}); const d=await r.json(); if(d.address){ $("ethAddr").innerHTML = "Ledger ETH (fund with USDC): <b>"+d.address+"</b>"; } }catch(e){} }
 
 async function api(path, body){
   const r = await fetch(path, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(body||{}) });
@@ -94,6 +101,7 @@ async function connect(){ try{ setBusy(true); log("Connecting… (first time ope
 async function deposit(){ try{ setBusy(true); const amt=u($("depAmt").value); log(`Shield ${$("depAmt").value} USDC — <b>approve on your Ledger</b>…`); const d=await api("/api/deposit",{amount:amt}); render(d); log(`<b>${d.note}</b> ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 async function transfer(){ try{ setBusy(true); const amt=u($("xferAmt").value); log(`Transfer ${$("xferAmt").value} USDC — <b>approve on your Ledger</b>…`); const d=await api("/api/transfer",{amount:amt}); render(d); log(`<b>Transfer ${d.status}</b> (${d.txId}) — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 async function execute(){ try{ setBusy(true); const amt=u($("execAmt").value); log(`Pool → DeFi via EA, ${$("execAmt").value} USDC — <b>approve on your Ledger</b>…`); const d=await api("/api/execute",{amount:amt}); render(d); log(`<b>Executed via EA</b> — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function shieldLedger(){ try{ setBusy(true); const amt=u($("shieldAmt").value); log(`Shield ${$("shieldAmt").value} USDC from your Ledger — <b>open the Ethereum app, sign Permit2</b>…`); const d=await api("/api/shield-ledger",{amount:amt}); render(d); log(`<b>${d.note}</b> ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 </script>
 </body>
 </html>

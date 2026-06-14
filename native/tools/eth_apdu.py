@@ -60,11 +60,28 @@ def sign712(path, domain_hash_hex, msg_hash_hex):
     v = body[0]; rr = body[1:33]; ss = body[33:65]
     return "0x" + rr.hex() + ss.hex() + bytes([v]).hex()
 
+def sign_tx(path, raw_tx_hex):
+    # INS 0x04 SIGN_TX. Payload = path + serialized (unsigned) tx, chunked at 255B.
+    rawtx = bytes.fromhex(raw_tx_hex[2:] if raw_tx_hex.startswith("0x") else raw_tx_hex)
+    payload = encode_path(path) + rawtx
+    r = None; off = 0; first = True
+    while off < len(payload):
+        chunk = payload[off:off+255]; off += len(chunk)
+        p1 = 0x00 if first else 0x80; first = False
+        apdu = bytes([0xE0, 0x04, p1, 0x00, len(chunk)]) + chunk
+        r = exchange(apdu, 120)
+    sw = r[-2:].hex()
+    if sw != "9000": raise SystemExit("sign_tx SW=" + sw)
+    body = r[:-2]                       # v(1) r(32) s(32)
+    return "0x" + body.hex()            # caller assembles v,r,s
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "get_address"
     if cmd == "get_address":
         print(get_address(sys.argv[2] if len(sys.argv) > 2 else "44'/60'/0'/0/0"))
     elif cmd == "sign712":
         print(sign712(sys.argv[2], sys.argv[3], sys.argv[4]))
+    elif cmd == "sign_tx":
+        print(sign_tx(sys.argv[2], sys.argv[3]))
     else:
-        print("usage: eth_apdu.py get_address [path] | sign712 <path> <domainHash> <msgHash>")
+        print("usage: eth_apdu.py get_address [path] | sign712 <path> <domH> <msgH> | sign_tx <path> <rawtx>")
