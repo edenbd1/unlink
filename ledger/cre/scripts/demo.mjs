@@ -31,8 +31,8 @@ const USER = process.env.LEDGER_ETH_ADDRESS || "0x065dF3372c1f9f86f5cfC220db027d
 const ALLOCATION_ABI = "address user, address[] vaults, uint16[] bps, uint16 blendedApyBps, bool approved, bytes32 transcriptHash, string inferenceId";
 
 const VAULTS = [
-  { address: "0xedf18f946344395d9fc5e20a67289ccce3f25b6f", name: "Unlink Stable Vault", apy: 4.2, risk: "low" },
-  { address: "0xe7c683e76b3a99d32cbda67beb33eedacaf6f90f", name: "Unlink Growth Vault", apy: 7.8, risk: "high" },
+  { address: "0xedf18f946344395d9fc5e20a67289ccce3f25b6f", name: "Aave USDC", protocol: "Aave v3", apy: 4.1, risk: "low" },
+  { address: "0xe7c683e76b3a99d32cbda67beb33eedacaf6f90f", name: "Morpho USDC", protocol: "Morpho", apy: 7.4, risk: "high" },
 ];
 const GOALS = process.argv[2] || "$10,000 steady yield, not too aggressive, good APY";
 const hr = (t) => console.log(`\n\x1b[1m\x1b[36m${t}\x1b[0m`);

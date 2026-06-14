@@ -47,8 +47,8 @@ function buildPrompt({ goals, capitalBase, balanceBase, vaults }) {
     `- goals: "${goals || "safe, steady yield on my USDC"}"\n` +
     `- capital: ${fmtUsdc(capitalBase)} USDC\n` +
     `- current Unlink private balance: ${fmtUsdc(balanceBase ?? capitalBase)} USDC\n\n` +
-    "Vaults (ERC-4626, USDC):\n" +
-    vaults.map((v) => `- ${v.name} ${v.address}  ~${v.apy}% APY, ${v.risk} risk`).join("\n") +
+    "Vaults (ERC-4626 USDC markets):\n" +
+    vaults.map((v) => `- ${v.name}${v.protocol ? ` — ${v.protocol}` : ""} ${v.address}  ~${v.apy}% APY, ${v.risk} risk`).join("\n") +
     "\n\nRespond with ONLY a valid JSON object:\n" +
     '{ "approved": true, "risk_level": "low|medium|high", "blended_apy_bps": 582, ' +
     '"reason": "one sentence citing the split and the blended APY", ' +

@@ -46,15 +46,15 @@ function fallbackAllocation(prompt) {
   const aggressive = !notAggr && /aggress|degen|max(imal)?\s*(yield|apy|growth)|high\s*risk/i.test(prompt);
   const safe = notAggr || /safe|conserv|preserv|steady|capital\s*preserv|low\s*risk/i.test(prompt);
   const [sBps, gBps] = aggressive ? [3000, 7000] : safe ? [6000, 4000] : [5000, 5000];
-  const blended = Math.round(((sBps / 10000) * 4.2 + (gBps / 10000) * 7.8) * 100);
+  const blended = Math.round(((sBps / 10000) * 4.1 + (gBps / 10000) * 7.4) * 100);
   return {
     approved: true,
     risk_level: aggressive ? "high" : safe ? "medium" : "medium",
     blended_apy_bps: blended,
-    reason: `Local stand-in: ${sBps / 100}% Stable / ${gBps / 100}% Growth for a ~${(blended / 100).toFixed(2)}% blended APY.`,
+    reason: `Local stand-in: ${sBps / 100}% Aave / ${gBps / 100}% Morpho for a ~${(blended / 100).toFixed(2)}% blended APY.`,
     allocations: [
-      { vault: stable, name: "Unlink Stable Vault", bps: sBps },
-      { vault: growth, name: "Unlink Growth Vault", bps: gBps },
+      { vault: stable, name: "Aave USDC", bps: sBps },
+      { vault: growth, name: "Morpho USDC", bps: gBps },
     ],
   };
 }

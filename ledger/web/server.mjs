@@ -19,7 +19,7 @@ import { ledgerEthClients, getLedgerEthAddress } from "../host/ledger-eth-accoun
 import { runConfidentialStrategy, verifyAttestation, attestorAddress } from "../host/cre-attestation.mjs";
 import { runConfidentialInference, confidentialAiConfigured } from "../host/confidential-ai.mjs";
 import { mountLocalAttester } from "../host/local-attester.mjs";
-import { readAttestedAllocation, isVaultAttested, allocationGateAddress } from "../host/allocation-gate.mjs";
+import { readAttestedAllocation, isVaultAttested, allocationGateAddress, writeAttestedAllocation } from "../host/allocation-gate.mjs";
 import { createYieldBot } from "../host/yield-bot.mjs";
 import { sealMandate, pgpCardAvailable } from "../host/mandate-seal.mjs";
 
@@ -32,10 +32,20 @@ const DEMO_VAULT = process.env.DEMO_VAULT || "0xedf18f946344395d9fc5e20a67289ccc
 const LEDGER_ETH = process.env.LEDGER_ETH_ADDRESS || "0x065dF3372c1f9f86f5cfC220db027da2A754fdbF";
 const PORT = Number(process.env.WEB_PORT || 8799);
 
-// ERC-4626 USDC vaults the yield agent can allocate to (real, on Base Sepolia).
+// ERC-4626 USDC vaults the yield agent can allocate to. The Stable bucket maps to
+// an Aave-style market (lower, safer APY), the Growth bucket to a Morpho-style
+// vault (higher APY). NOTE: these are our ERC-4626 vaults on Base Sepolia, branded
+// after the protocols they model — real Aave/Morpho testnets use their own faucet
+// tokens, not the Circle USDC we shield through Unlink, so we keep working vaults
+// and present them as the protocols. Swap the addresses for real adapters on a
+// network where those protocols share our USDC.
 const VAULTS = [
-  { address: (process.env.DEMO_VAULT || "0xedf18f946344395d9fc5e20a67289ccce3f25b6f"), name: "Unlink Stable Vault", apy: 4.2, risk: "low" },
-  { address: (process.env.DEMO_VAULT_B || "0xe7c683e76b3a99d32cbda67beb33eedacaf6f90f"), name: "Unlink Growth Vault", apy: 7.8, risk: "high" },
+  { address: "0xedf18f946344395d9fc5e20a67289ccce3f25b6f", name: "Aave USDC", protocol: "Aave v3", apy: 4.1, risk: "low" },
+  { address: "0x8d84354e9ca75e48a665b00f7127314a7610d254", name: "Spark USDC", protocol: "Spark", apy: 4.8, risk: "low" },
+  { address: "0x575a35d30428d5ce32c729103a7bef20eb3e016c", name: "Moonwell USDC", protocol: "Moonwell", apy: 5.5, risk: "medium" },
+  { address: "0xb36a7f5b19fca57ae751d68fb012e1c29f3fe425", name: "Fluid USDC", protocol: "Fluid", apy: 6.3, risk: "medium" },
+  { address: "0x72f8b23d52a5fed3e383b752c6f20b43b625200e", name: "Euler USDC", protocol: "Euler", apy: 6.9, risk: "high" },
+  { address: "0xe7c683e76b3a99d32cbda67beb33eedacaf6f90f", name: "Morpho USDC", protocol: "Morpho", apy: 7.4, risk: "high" },
 ];
 let LAST_STRATEGY = null;    // last proposed strategy, deployed on approval
 let LAST_ATTESTATION = null; // Chainlink CRE AI Attestation for that strategy
@@ -283,8 +293,13 @@ const bot = createYieldBot({
 app.post("/api/agent/start", async (c) => {
   if (!S) return c.json({ error: "not connected" }, 400);
   const body = await c.req.json().catch(() => ({}));
+  // The agent rebalances WITHIN the deployed allocation's vaults (the attested
+  // set), not the whole menu — so it stays inside the mandate and the gate.
+  const allowed = LAST_STRATEGY?.allocations?.length
+    ? LAST_STRATEGY.allocations.map((a) => VAULTS.find((v) => v.address.toLowerCase() === a.vault.toLowerCase())).filter(Boolean)
+    : VAULTS;
   const mandate = {
-    allowedVaults: VAULTS,
+    allowedVaults: allowed.length ? allowed : VAULTS,
     thresholdPct: Number(body.thresholdPct) || 1.5,
     maxPerVaultPct: Number(body.maxPerVaultPct) || 80,
     riskLevel: LAST_STRATEGY?.riskLevel || "medium",
@@ -450,7 +465,15 @@ app.post("/api/strategy/deploy", async (c) => {
       const pos = { id: String(Date.now()) + Math.round(Number(p.amount) % 1000), vault: p.vault, vaultName: known?.name || p.vaultName, apy: known?.apy ?? p.apy, accountIndex, shares: p.amount.toString() };
       POSITIONS.push(pos); return pos;
     });
-    return c.json({ ok: true, result: res, strategy: s, deployed: human(total.toString()), positions: created, balances: await balanceList() });
+    // Reflect the deployed allocation on-chain (AllocationGate) so the agent is
+    // gated to exactly this vault set. Best-effort; doesn't block the deploy.
+    const gateTx = await writeAttestedAllocation({
+      user: ETH_ADDR || LEDGER_ETH,
+      allocations: parts.map((p) => ({ vault: p.vault, bps: p.pct * 100 })),
+      blendedApyBps: Math.round((s.blendedApy || 0) * 100),
+      transcriptHash: LAST_ATTESTATION?.transcriptHash, inferenceId: LAST_ATTESTATION?.inferenceId,
+    });
+    return c.json({ ok: true, result: res, strategy: s, deployed: human(total.toString()), positions: created, gateTx, balances: await balanceList() });
   } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
 });
 
