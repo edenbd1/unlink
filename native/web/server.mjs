@@ -22,6 +22,8 @@ const ENV = process.env.UNLINK_ENVIRONMENT || "base-sepolia";
 const API_KEY = process.env.UNLINK_API_KEY || "";
 const FUNDING_PK = process.env.FUNDING_PRIVATE_KEY || "";
 const USDC = process.env.DEMO_TOKEN || "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const DEMO_VAULT = process.env.DEMO_VAULT || "0xaf1ac7cd3f19e008129d1b7cd8da5daa09143482"; // ERC-4626 demo vault (USDC)
+const LEDGER_ETH = process.env.LEDGER_ETH_ADDRESS || "0x065dF3372c1f9f86f5cfC220db027da2A754fdbF";
 const PORT = Number(process.env.WEB_PORT || 8799);
 
 let S = null; // { account, admin, client, address }
@@ -135,8 +137,8 @@ app.post("/api/execute", async (c) => {
   if (!S) return c.json({ error: "not connected" }, 400);
   const body = await c.req.json().catch(() => ({}));
   const amount = body.amount || "100000";
-  const vault = body.vault;
-  const receiver = body.receiver || ETH_ADDR || "0x0000000000000000000000000000000000000001";
+  const vault = body.vault || DEMO_VAULT;
+  const receiver = body.receiver || ETH_ADDR || LEDGER_ETH;
   if (!vault) return c.json({ error: "vault address required" }, 400);
   const calls = [
     { target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [vault, BigInt(amount)] }) },
