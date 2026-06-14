@@ -23,14 +23,14 @@ const ENV = process.env.UNLINK_ENVIRONMENT || "base-sepolia";
 const API_KEY = process.env.UNLINK_API_KEY || "";
 const FUNDING_PK = process.env.FUNDING_PRIVATE_KEY || "";
 const USDC = process.env.DEMO_TOKEN || "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
-const DEMO_VAULT = process.env.DEMO_VAULT || "0xaf1ac7cd3f19e008129d1b7cd8da5daa09143482"; // ERC-4626 demo vault (USDC)
+const DEMO_VAULT = process.env.DEMO_VAULT || "0xedf18f946344395d9fc5e20a67289ccce3f25b6f"; // ERC-4626 demo vault (USDC), depositSelf/redeemSelf
 const LEDGER_ETH = process.env.LEDGER_ETH_ADDRESS || "0x065dF3372c1f9f86f5cfC220db027da2A754fdbF";
 const PORT = Number(process.env.WEB_PORT || 8799);
 
 // ERC-4626 USDC vaults the yield agent can allocate to (real, on Base Sepolia).
 const VAULTS = [
-  { address: (process.env.DEMO_VAULT || "0xaf1ac7cd3f19e008129d1b7cd8da5daa09143482"), name: "Unlink Stable Vault", apy: 4.2, risk: "low" },
-  { address: (process.env.DEMO_VAULT_B || "0x9cabfc6a6f8711767f3d89ff6e08be8fa22dc453"), name: "Unlink Growth Vault", apy: 7.8, risk: "high" },
+  { address: (process.env.DEMO_VAULT || "0xedf18f946344395d9fc5e20a67289ccce3f25b6f"), name: "Unlink Stable Vault", apy: 4.2, risk: "low" },
+  { address: (process.env.DEMO_VAULT_B || "0xe7c683e76b3a99d32cbda67beb33eedacaf6f90f"), name: "Unlink Growth Vault", apy: 7.8, risk: "high" },
 ];
 let LAST_STRATEGY = null; // last proposed strategy, deployed on approval
 
@@ -141,16 +141,21 @@ const ERC20_APPROVE = [{ name: "approve", type: "function", stateMutability: "no
 const ERC4626_DEPOSIT = [{ name: "deposit", type: "function", stateMutability: "nonpayable",
   inputs: [{ name: "assets", type: "uint256" }, { name: "receiver", type: "address" }], outputs: [{ name: "shares", type: "uint256" }] }];
 
-const ERC4626_REDEEM = [{ name: "redeem", type: "function", stateMutability: "nonpayable",
-  inputs: [{ name: "shares", type: "uint256" }, { name: "receiver", type: "address" }, { name: "owner", type: "address" }], outputs: [{ name: "assets", type: "uint256" }] }];
+// depositSelf/redeemSelf mint+burn to msg.sender (the Execution Account), so we
+// never need the EA address ahead of time.
+const ERC4626_DEPOSIT_SELF = [{ name: "depositSelf", type: "function", stateMutability: "nonpayable",
+  inputs: [{ name: "assets", type: "uint256" }], outputs: [{ name: "shares", type: "uint256" }] }];
+const ERC4626_REDEEM_SELF = [{ name: "redeemSelf", type: "function", stateMutability: "nonpayable",
+  inputs: [{ name: "shares", type: "uint256" }], outputs: [{ name: "assets", type: "uint256" }] }];
 
-let POSITIONS = []; // open vault positions held by a reserved Execution Account, redeemable later
+let POSITIONS = []; // open vault positions held by an Execution Account, redeemable later
 
 app.get("/api/positions", (c) => c.json({ positions: POSITIONS }));
 
-// Deposit into an ERC-4626 vault. We reserve an Execution Account and send the
-// SHARES to the EA itself, so the position can be redeemed later from the same
-// account (Aave-style deposit -> aToken, then redeem). Signed on the Ledger.
+// Deposit into an ERC-4626 vault. The Execution Account is msg.sender, so
+// depositSelf mints the SHARES to the EA itself and the position can be redeemed
+// later from the same account (Aave-style: deposit USDC -> aToken, then redeem).
+// Signed on the Ledger.
 app.post("/api/execute", async (c) => {
   if (!S) return c.json({ error: "not connected" }, 400);
   const body = await c.req.json().catch(() => ({}));
@@ -158,40 +163,41 @@ app.post("/api/execute", async (c) => {
   const vault = body.vault || DEMO_VAULT;
   const vaultName = body.vaultName || "Unlink Demo Vault";
   if (!vault) return c.json({ error: "vault address required" }, 400);
+  const calls = [
+    { target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [vault, BigInt(amount)] }) },
+    { target: vault, value: "0", data: encodeFunctionData({ abi: ERC4626_DEPOSIT_SELF, functionName: "depositSelf", args: [BigInt(amount)] }) },
+  ];
   try {
-    // reserve the EA up front so we know its address (the share receiver)
-    const reservation = await S.client.reserveExecutionAccount({ allocationPolicy: "first_unused" });
-    const accountIndex = reservation.account_index;
-    const eaAddress = reservation.account_address;
-    if (!eaAddress) return c.json({ error: "execution account address not available yet" }, 500);
-    const calls = [
-      { target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [vault, BigInt(amount)] }) },
-      { target: vault, value: "0", data: encodeFunctionData({ abi: ERC4626_DEPOSIT, functionName: "deposit", args: [BigInt(amount), eaAddress] }) },
-    ];
     const approved = await reviewPairsOnDevice([
       ["Deposit", human(amount)],
       ["Vault", vaultName],
       ["Address", vault],
     ]);
     if (!approved) return c.json({ error: "rejected on device" }, 400);
-    const res = await S.client.execute({ token: USDC, amount, calls, allocationPolicy: "by_index", accountIndex });
-    const pos = { id: String(Date.now()), vault, vaultName, accountIndex, eaAddress, shares: amount };
+    const res = await S.client.execute({ token: USDC, amount, calls });
+    const accountIndex = res.execution?.account_index;
+    const pos = { id: String(Date.now()), vault, vaultName, accountIndex, shares: amount };
     POSITIONS.push(pos);
     return c.json({ ok: true, result: res, position: pos, positions: POSITIONS, balances: await balanceList() });
   } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
 });
 
-// Redeem an open vault position: redeem the shares from the SAME Execution
-// Account (follow-up call, no new private withdrawal), then deposit the USDC
-// back into the private pool. Signed on the Ledger.
+// Redeem an open vault position: redeemSelf from the SAME Execution Account (a
+// follow-up call, no new private withdrawal), then deposit the USDC back into
+// the private pool. Signed on the Ledger.
 app.post("/api/redeem", async (c) => {
   if (!S) return c.json({ error: "not connected" }, 400);
   const body = await c.req.json().catch(() => ({}));
   const pos = (body.id && POSITIONS.find((p) => p.id === body.id)) || POSITIONS[POSITIONS.length - 1];
   if (!pos) return c.json({ error: "no open position to redeem" }, 400);
-  const shares = BigInt(pos.shares);
+  if (pos.accountIndex == null) return c.json({ error: "position has no execution account index" }, 400);
+  const PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+  const MAX = (1n << 256n) - 1n;
   const calls = [
-    { target: pos.vault, value: "0", data: encodeFunctionData({ abi: ERC4626_REDEEM, functionName: "redeem", args: [shares, pos.eaAddress, pos.eaAddress] }) },
+    // redeem the shares -> USDC into the Execution Account, then let Permit2 pull
+    // it for the deposit-back into the private pool.
+    { target: pos.vault, value: "0", data: encodeFunctionData({ abi: ERC4626_REDEEM_SELF, functionName: "redeemSelf", args: [BigInt(pos.shares)] }) },
+    { target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [PERMIT2, MAX] }) },
   ];
   const nonce = globalThis.crypto.getRandomValues(new BigUint64Array(1))[0].toString();
   const deadline = Math.floor(Date.now() / 1000) + 3600;

@@ -51,6 +51,15 @@ contract DemoVault {
         emit Deposit(msg.sender, receiver, assets, shares);
     }
 
+    // Convenience for smart accounts (the Execution Account is msg.sender): the
+    // caller need not know its own address ahead of time.
+    function depositSelf(uint256 assets) external returns (uint256 shares) {
+        return deposit(assets, msg.sender);
+    }
+    function redeemSelf(uint256 shares) external returns (uint256 assets) {
+        return redeem(shares, msg.sender, msg.sender);
+    }
+
     function redeem(uint256 shares, address receiver, address owner) public returns (uint256 assets) {
         if (msg.sender != owner) {
             uint256 a = allowance[owner][msg.sender];
