@@ -2,28 +2,59 @@
 // strategy (which vault, how much, a rebalancing rule). It can sign nothing and
 // move nothing. The only thing that deploys funds is your Ledger approval.
 //
-// Uses Claude when ANTHROPIC_API_KEY is set, otherwise a deterministic fallback,
-// so the flow works with or without a key.
+// Uses an LLM when an API key is set (Mistral, or Anthropic as a fallback),
+// otherwise a deterministic rule, so the flow works with or without a key.
 
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+function parseJson(text) {
+  if (!text) return null;
+  const m = text.match(/\{[\s\S]*\}/); // extract the JSON object
+  try { return m ? JSON.parse(m[0]) : null; } catch { return null; }
+}
 
-async function askClaude(system, user) {
+async function askMistral(system, user) {
+  const key = process.env.MISTRAL_API_KEY;
+  if (!key) return null;
+  try {
+    const r = await fetch("https://api.mistral.ai/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: process.env.MISTRAL_MODEL || "mistral-large-latest",
+        messages: [{ role: "system", content: system }, { role: "user", content: user }],
+        max_tokens: 1024,
+        response_format: { type: "json_object" },
+      }),
+    });
+    const d = await r.json();
+    return parseJson(d?.choices?.[0]?.message?.content);
+  } catch { return null; }
+}
+
+async function askAnthropic(system, user) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) return null;
   try {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body: JSON.stringify({ model: MODEL, max_tokens: 1024, system, messages: [{ role: "user", content: user }] }),
+      body: JSON.stringify({ model: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6", max_tokens: 1024, system, messages: [{ role: "user", content: user }] }),
     });
     const d = await r.json();
-    const text = d?.content?.[0]?.text;
-    if (!text) return null;
-    const m = text.match(/\{[\s\S]*\}/); // extract the JSON object
-    return m ? JSON.parse(m[0]) : null;
-  } catch {
-    return null;
+    return parseJson(d?.content?.[0]?.text);
+  } catch { return null; }
+}
+
+// Returns { json, model } from whichever LLM is configured, or null.
+async function askLLM(system, user) {
+  if (process.env.MISTRAL_API_KEY) {
+    const j = await askMistral(system, user);
+    if (j) return { json: j, model: "mistral" };
   }
+  if (process.env.ANTHROPIC_API_KEY) {
+    const j = await askAnthropic(system, user);
+    if (j) return { json: j, model: "claude" };
+  }
+  return null;
 }
 
 const fmt = (base) => (Number(base) / 1e6).toFixed(2) + " USDC";
@@ -48,10 +79,11 @@ export async function proposeStrategy({ goals, amountBase, vaults }) {
     `Available vaults (ERC-4626, USDC):\n` +
     vaults.map((v) => `- ${v.name} (${v.address}) ~${v.apy}% APY`).join("\n");
 
-  const ai = await askClaude(system, user);
+  const res = await askLLM(system, user);
+  const ai = res?.json;
   if (ai && ai.vault) {
     return {
-      source: "claude",
+      source: res.model,
       summary: ai.summary || "AI yield strategy",
       riskLevel: ai.riskLevel || "low",
       vault: ai.vault,
