@@ -1,0 +1,38 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1F3D31"/>
+      <stop offset="38%" stop-color="#2E5944"/>
+      <stop offset="80%" stop-color="#1F3D31"/>
+      <stop offset="100%" stop-color="#14271F"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="74%" cy="2%" r="95%">
+      <stop offset="0%" stop-color="#5b8f6b" stop-opacity="0.5"/>
+      <stop offset="42%" stop-color="#28533f" stop-opacity="0.18"/>
+      <stop offset="90%" stop-color="#0f2319" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <!-- big faded moon, right side -->
+  <g transform="translate(820, 150) scale(9)" opacity="0.10">
+    <path d="M27 11.5 A11 11 0 1 0 27 28.5 A9 9 0 0 1 27 11.5 Z" fill="#fdf8ed"/>
+  </g>
+
+  <!-- moon mark -->
+  <g transform="translate(96, 92) scale(3.1)">
+    <circle cx="20" cy="20" r="20" fill="#14271F"/>
+    <path d="M27 11.5 A11 11 0 1 0 27 28.5 A9 9 0 0 1 27 11.5 Z" fill="#fdf8ed"/>
+    <path d="M7 30 Q12 26.5 17 30 Q22 33.5 27 30" stroke="#fdf8ed" stroke-width="1.8" stroke-linecap="round" fill="none" opacity="0.45"/>
+  </g>
+
+  <text x="96" y="372" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="120" font-weight="600" fill="#fdf8ed" letter-spacing="-3">Lunave</text>
+  <text x="100" y="434" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="32" font-weight="300" fill="#d8e6dd">Private AI yield, custodied by your Ledger.</text>
+  <text x="100" y="476" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="20" font-weight="300" fill="#9ec7b6">The spending key never leaves the Secure Element.</text>
+
+  <rect x="100" y="536" width="1000" height="1" fill="#fdf8ed" opacity="0.12"/>
+  <text x="100" y="576" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="19" font-weight="500" fill="#70B19E">Ledger  ·  Unlink  ·  Chainlink CRE + Confidential AI</text>
+  <text x="1100" y="576" text-anchor="end" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="19" font-weight="400" fill="#5f9a86">ETHGlobal New York 2026</text>
+</svg>
