@@ -25,6 +25,7 @@ const USDC = process.env.DEMO_TOKEN || "0x036CbD53842c5426634e7929541eC2318f3dCF
 const PORT = Number(process.env.WEB_PORT || 8799);
 
 let S = null; // { account, admin, client, address }
+let ETH_ADDR = null; // cached Ledger ETH address (vault-share receiver)
 
 const human = (base) => (Number(base) / 1e6).toFixed(2) + " USDC";
 const shortAddr = (a) => a.slice(0, 14) + "…" + a.slice(-6);
@@ -85,7 +86,7 @@ app.post("/api/deposit", async (c) => {
 
 // The Ledger's own Ethereum address (where you hold USDC to shield).
 app.get("/api/eth-address", async (c) => {
-  try { return c.json({ address: await getLedgerEthAddress() }); }
+  try { ETH_ADDR = await getLedgerEthAddress(); return c.json({ address: ETH_ADDR }); }
   catch (e) { return c.json({ error: String(e.message || e) }, 500); }
 });
 
@@ -97,6 +98,7 @@ app.post("/api/shield-ledger", async (c) => {
   const { amount = "1000000" } = await c.req.json().catch(() => ({}));
   try {
     const { walletClient, publicClient, address: ethAddr } = await ledgerEthClients();
+    ETH_ADDR = ethAddr;
     const ledgerEvm = evm.fromViem({ walletClient, publicClient });
     const client = createUnlinkClient({
       environment: ENV, account: S.account, evm: ledgerEvm,
@@ -121,25 +123,27 @@ app.post("/api/transfer", async (c) => {
   } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
 });
 
-// Pool -> DeFi via an Execution Account. Withdraws `amount` privately into the EA
-// and runs `calls` from it (e.g. approve + supply). SPENDS → Ledger approve + sign.
+// Pool -> DeFi vault via an Execution Account. Withdraws `amount` privately into
+// the EA, then from the EA: approve(vault) + ERC-4626 deposit(amount, receiver).
+// SPENDS the private balance → Ledger approve + sign (Unlink app).
+const ERC20_APPROVE = [{ name: "approve", type: "function", stateMutability: "nonpayable",
+  inputs: [{ name: "spender", type: "address" }, { name: "amount", type: "uint256" }], outputs: [{ type: "bool" }] }];
+const ERC4626_DEPOSIT = [{ name: "deposit", type: "function", stateMutability: "nonpayable",
+  inputs: [{ name: "assets", type: "uint256" }, { name: "receiver", type: "address" }], outputs: [{ name: "shares", type: "uint256" }] }];
+
 app.post("/api/execute", async (c) => {
   if (!S) return c.json({ error: "not connected" }, 400);
   const body = await c.req.json().catch(() => ({}));
   const amount = body.amount || "100000";
-  // default demo call: ERC-20 approve(spender, amount) from the EA — a real,
-  // harmless on-chain call that proves the EA executes a DeFi-style action.
-  const spender = body.spender || "0x0000000000000000000000000000000000000001";
-  const calls = body.calls || [{
-    target: USDC, value: "0",
-    data: encodeFunctionData({
-      abi: [{ name: "approve", type: "function", stateMutability: "nonpayable",
-        inputs: [{ name: "spender", type: "address" }, { name: "amount", type: "uint256" }], outputs: [{ type: "bool" }] }],
-      functionName: "approve", args: [spender, BigInt(amount)],
-    }),
-  }];
+  const vault = body.vault;
+  const receiver = body.receiver || ETH_ADDR || "0x0000000000000000000000000000000000000001";
+  if (!vault) return c.json({ error: "vault address required" }, 400);
+  const calls = [
+    { target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [vault, BigInt(amount)] }) },
+    { target: vault, value: "0", data: encodeFunctionData({ abi: ERC4626_DEPOSIT, functionName: "deposit", args: [BigInt(amount), receiver] }) },
+  ];
   try {
-    const approved = await reviewIntentOnDevice(human(amount), "DeFi via EA");
+    const approved = await reviewIntentOnDevice(human(amount), "vault via EA");
     if (!approved) return c.json({ error: "rejected on device" }, 400);
     const res = await S.client.execute({ token: USDC, amount, calls });
     return c.json({ ok: true, result: res, balances: await balanceList() });
