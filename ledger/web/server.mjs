@@ -141,27 +141,74 @@ const ERC20_APPROVE = [{ name: "approve", type: "function", stateMutability: "no
 const ERC4626_DEPOSIT = [{ name: "deposit", type: "function", stateMutability: "nonpayable",
   inputs: [{ name: "assets", type: "uint256" }, { name: "receiver", type: "address" }], outputs: [{ name: "shares", type: "uint256" }] }];
 
+const ERC4626_REDEEM = [{ name: "redeem", type: "function", stateMutability: "nonpayable",
+  inputs: [{ name: "shares", type: "uint256" }, { name: "receiver", type: "address" }, { name: "owner", type: "address" }], outputs: [{ name: "assets", type: "uint256" }] }];
+
+let POSITIONS = []; // open vault positions held by a reserved Execution Account, redeemable later
+
+app.get("/api/positions", (c) => c.json({ positions: POSITIONS }));
+
+// Deposit into an ERC-4626 vault. We reserve an Execution Account and send the
+// SHARES to the EA itself, so the position can be redeemed later from the same
+// account (Aave-style deposit -> aToken, then redeem). Signed on the Ledger.
 app.post("/api/execute", async (c) => {
   if (!S) return c.json({ error: "not connected" }, 400);
   const body = await c.req.json().catch(() => ({}));
   const amount = body.amount || "100000";
   const vault = body.vault || DEMO_VAULT;
   const vaultName = body.vaultName || "Unlink Demo Vault";
-  const receiver = body.receiver || ETH_ADDR || LEDGER_ETH;
   if (!vault) return c.json({ error: "vault address required" }, 400);
-  const calls = [
-    { target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [vault, BigInt(amount)] }) },
-    { target: vault, value: "0", data: encodeFunctionData({ abi: ERC4626_DEPOSIT, functionName: "deposit", args: [BigInt(amount), receiver] }) },
-  ];
   try {
+    // reserve the EA up front so we know its address (the share receiver)
+    const reservation = await S.client.reserveExecutionAccount({ allocationPolicy: "first_unused" });
+    const accountIndex = reservation.account_index;
+    const eaAddress = reservation.account_address;
+    if (!eaAddress) return c.json({ error: "execution account address not available yet" }, 500);
+    const calls = [
+      { target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [vault, BigInt(amount)] }) },
+      { target: vault, value: "0", data: encodeFunctionData({ abi: ERC4626_DEPOSIT, functionName: "deposit", args: [BigInt(amount), eaAddress] }) },
+    ];
     const approved = await reviewPairsOnDevice([
-      ["Amount", human(amount)],
+      ["Deposit", human(amount)],
       ["Vault", vaultName],
       ["Address", vault],
     ]);
     if (!approved) return c.json({ error: "rejected on device" }, 400);
-    const res = await S.client.execute({ token: USDC, amount, calls });
-    return c.json({ ok: true, result: res, balances: await balanceList() });
+    const res = await S.client.execute({ token: USDC, amount, calls, allocationPolicy: "by_index", accountIndex });
+    const pos = { id: String(Date.now()), vault, vaultName, accountIndex, eaAddress, shares: amount };
+    POSITIONS.push(pos);
+    return c.json({ ok: true, result: res, position: pos, positions: POSITIONS, balances: await balanceList() });
+  } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
+});
+
+// Redeem an open vault position: redeem the shares from the SAME Execution
+// Account (follow-up call, no new private withdrawal), then deposit the USDC
+// back into the private pool. Signed on the Ledger.
+app.post("/api/redeem", async (c) => {
+  if (!S) return c.json({ error: "not connected" }, 400);
+  const body = await c.req.json().catch(() => ({}));
+  const pos = (body.id && POSITIONS.find((p) => p.id === body.id)) || POSITIONS[POSITIONS.length - 1];
+  if (!pos) return c.json({ error: "no open position to redeem" }, 400);
+  const shares = BigInt(pos.shares);
+  const calls = [
+    { target: pos.vault, value: "0", data: encodeFunctionData({ abi: ERC4626_REDEEM, functionName: "redeem", args: [shares, pos.eaAddress, pos.eaAddress] }) },
+  ];
+  const nonce = globalThis.crypto.getRandomValues(new BigUint64Array(1))[0].toString();
+  const deadline = Math.floor(Date.now() / 1000) + 3600;
+  try {
+    const approved = await reviewPairsOnDevice([
+      ["Redeem", human(pos.shares)],
+      ["From", pos.vaultName],
+      ["To", "your private pool"],
+    ]);
+    if (!approved) return c.json({ error: "rejected on device" }, 400);
+    const res = await S.client.executeAccountCall({
+      accountIndex: pos.accountIndex,
+      calls,
+      depositBack: { token: USDC, amount: pos.shares, nonce, deadline },
+    });
+    POSITIONS = POSITIONS.filter((p) => p.id !== pos.id);
+    return c.json({ ok: true, result: res, positions: POSITIONS, balances: await balanceList() });
   } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
 });
 

@@ -18,7 +18,7 @@
     "@ledgerhq/hw-transport-node-hid": "^6.33.4",
     "@simplewebauthn/browser": "^13.3.0",
     "@simplewebauthn/server": "^13.3.1",
-    "@unlink-xyz/sdk": "^0.3.0-canary.598",
+    "@unlink-xyz/sdk": "^0.3.0-canary.628",
     "hono": "^4.12.25",
     "node-hid": "^3.3.0",
     "react": "^19.2.7",

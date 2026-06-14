@@ -83,6 +83,7 @@
       <button id="bExecute" onclick="execute()" disabled>Deposit to vault</button>
       <span class="pill ledger">Ledger approve + sign</span>
     </div>
+    <div id="positions" style="margin-top:12px"></div>
   </div>
 
   <div class="card">
@@ -121,10 +122,16 @@ function render(d){
   if(d.balances){ const usdc=d.balances.find(b=>b.token.toLowerCase().includes("036cbd")); $("bal").innerHTML = (usdc?usdc.human.replace(" USDC",""):"0.00") + ' <small>USDC</small>'; }
 }
 
-async function connect(){ try{ setBusy(true,"Connecting — approve on your Ledger (Unlink app)"); log("Connecting… (open the Unlink app + tap to approve)"); const d=await api("/api/connect"); render(d); log(`<b>Connected.</b> ${d.fromCache?"keys from cache":"keys read & cached"}`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function connect(){ try{ setBusy(true,"Connecting — approve on your Ledger (Unlink app)"); log("Connecting… (open the Unlink app + tap to approve)"); const d=await api("/api/connect"); render(d); log(`<b>Connected.</b> ${d.fromCache?"keys from cache":"keys read & cached"}`); try{ const p=await(await fetch("/api/positions")).json(); renderPositions(p.positions); }catch(_){} }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 async function shieldLedger(){ try{ setBusy(true,"Shielding — sign Permit2 on your Ledger (Ethereum app)"); const amt=u($("shieldAmt").value); log(`Shield ${$("shieldAmt").value} USDC from your Ledger — <b>open the Ethereum app, sign</b>…`); const d=await api("/api/shield-ledger",{amount:amt}); render(d); log(`<b>${d.note}</b> ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 async function transfer(){ try{ setBusy(true,"Sending — approve + sign on your Ledger (Unlink app)"); const amt=u($("xferAmt").value); const recipient=$("recip").value.trim()||undefined; log(`Send ${$("xferAmt").value} USDC${recipient?" to "+recipient.slice(0,14)+"…":" (to yourself)"} — <b>approve on your Ledger</b>…`); const d=await api("/api/transfer",{amount:amt,recipient}); render(d); log(`<b>Sent — ${d.status}</b> (${d.txId}) — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
-async function execute(){ const vault=$("vault").value.trim(); if(!vault){ log("Enter a vault address first.","err"); return; } try{ setBusy(true,"Depositing to vault — approve + sign on your Ledger (Unlink app)"); const amt=u($("execAmt").value); log(`Deposit ${$("execAmt").value} USDC to vault ${vault.slice(0,12)}… via EA — <b>approve on your Ledger</b>…`); const d=await api("/api/execute",{amount:amt,vault}); render(d); log(`<b>Deposited to vault via EA</b> — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function execute(){ const vault=$("vault").value.trim(); if(!vault){ log("Enter a vault address first.","err"); return; } try{ setBusy(true,"Depositing to vault — approve + sign on your Ledger (Unlink app)"); const amt=u($("execAmt").value); log(`Deposit ${$("execAmt").value} USDC to vault ${vault.slice(0,12)}… via EA — <b>approve on your Ledger</b>…`); const d=await api("/api/execute",{amount:amt,vault}); render(d); renderPositions(d.positions); log(`<b>Deposited — got vault shares</b> (held by the Execution Account, redeemable). Signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+function renderPositions(positions){ const el=$("positions"); if(!positions||!positions.length){ el.innerHTML=""; return; } el.innerHTML = `<div style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em">Open positions (vault shares)</div>` + positions.map(p=>`
+  <div class="row" style="justify-content:space-between;border-top:1px solid var(--line);padding:8px 0">
+    <span style="font-size:13px"><b style="color:var(--fg)">${(Number(p.shares)/1e6).toFixed(2)}</b> shares · ${p.vaultName}</span>
+    <button onclick="redeem('${p.id}')" class="ghost">Redeem</button>
+  </div>`).join(""); }
+async function redeem(id){ try{ setBusy(true,"Redeeming — approve + sign on your Ledger (Unlink app)"); log(`Redeeming vault shares back to your private pool — <b>approve on your Ledger</b>…`); const d=await api("/api/redeem",{id}); render(d); renderPositions(d.positions); log(`<b>Redeemed</b> — shares burned, USDC back in your private pool. Signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 
 async function propose(){ try{ setBusy(true,"Co-pilot is thinking…"); const amt=u($("stratAmt").value); const goals=$("goals").value.trim(); log(`Co-pilot designing a strategy for ${$("stratAmt").value} USDC…`); const d=await api("/api/strategy/propose",{amount:amt,goals}); renderStrategy(d.strategy); log(`<b>Strategy proposed</b> (${d.strategy.source==="rule"?"rule-based":"AI · "+d.strategy.source}). Review and approve on your Ledger.`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 function renderStrategy(s){
