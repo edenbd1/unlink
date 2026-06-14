@@ -127,16 +127,24 @@ export async function connectApproveOnDevice() {
 // a physical approval, BEFORE the tx is prepared (so the tap is outside the
 // engine's prepare->submit window). Resolves true on approval, false on reject.
 export async function reviewPairsOnDevice(pairs) {
-  // Truncate each field so it reads on the small device screen and the whole
-  // payload stays within the single-byte APDU length (Lc <= 255).
-  const trunc = (s, n) => { s = String(s); return s.length > n ? s.slice(0, n - 1) + "." : s; };
-  const parts = [];
-  for (const [label, value] of pairs.slice(0, 4)) {
-    parts.push(Buffer.from(trunc(label, 16), "utf8"), Buffer.from([0]),
-               Buffer.from(trunc(value, 44), "utf8"), Buffer.from([0]));
+  // Send the FULL values (so a long unlink recipient address shows in full on the
+  // device). Only truncate values if the whole payload won't fit the single-byte
+  // APDU length (Lc <= 255) — e.g. a 4-field strategy review with long text.
+  const trunc = (s, n) => { s = String(s); return n && s.length > n ? s.slice(0, n - 1) + "." : s; };
+  const build = (maxVal) => {
+    const parts = [];
+    for (const [label, value] of pairs.slice(0, 4)) {
+      parts.push(Buffer.from(trunc(label, 16), "utf8"), Buffer.from([0]),
+                 Buffer.from(trunc(value, maxVal), "utf8"), Buffer.from([0]));
+    }
+    const j = Buffer.concat(parts);
+    return j.subarray(0, j.length - 1); // drop the trailing NUL
+  };
+  let payload = build(0); // 0 = no value truncation: full addresses
+  if (payload.length > 255) {
+    for (const cap of [140, 100, 70, 48, 32]) { payload = build(cap); if (payload.length <= 255) break; }
+    if (payload.length > 255) payload = payload.subarray(0, 255);
   }
-  let payload = Buffer.concat(parts).subarray(0, -1); // drop the trailing NUL
-  if (payload.length > 255) payload = payload.subarray(0, 255);
   const apduHex = "e0090000" + payload.length.toString(16).padStart(2, "0") + payload.toString("hex");
   const sw = await sendApduSW(apduHex, 120);
   if (sw === "9000") return true;
