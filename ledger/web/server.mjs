@@ -6,6 +6,7 @@
 // Run:  node --env-file=.env native/web/server.mjs    →  http://localhost:8799
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -98,6 +99,9 @@ async function discoverPositions(client) {
 }
 
 const app = new Hono();
+
+// Allow the unlink-aave front (Vite :5173/:5174) to call this backend.
+app.use("*", cors({ origin: (o) => o || "*", credentials: true }));
 
 // Local stand-in for the Chainlink Confidential AI Attester: same /v1/inference
 // contract, so the whole pipeline runs without a sandbox API key. Disabled if a
