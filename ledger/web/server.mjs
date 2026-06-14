@@ -19,6 +19,7 @@ import { ledgerEthClients, getLedgerEthAddress } from "../host/ledger-eth-accoun
 import { runConfidentialStrategy, verifyAttestation, attestorAddress } from "../host/cre-attestation.mjs";
 import { runConfidentialInference, confidentialAiConfigured } from "../host/confidential-ai.mjs";
 import { mountLocalAttester } from "../host/local-attester.mjs";
+import { readAttestedAllocation, isVaultAttested, allocationGateAddress } from "../host/allocation-gate.mjs";
 import { createYieldBot } from "../host/yield-bot.mjs";
 import { sealMandate, pgpCardAvailable } from "../host/mandate-seal.mjs";
 
@@ -231,6 +232,13 @@ app.post("/api/redeem", async (c) => {
 async function doRebalance({ pos, target, silent }) {
   if (!S) throw new Error("not connected");
   if (pos.accountIndex == null) throw new Error("position has no execution account index");
+  // Enforce the DON-attested allocation: if an on-chain attestation exists for
+  // this user, only move into a vault that is in the attested set.
+  const gateUser = ETH_ADDR || LEDGER_ETH;
+  const gate = await isVaultAttested(gateUser, target.address).catch(() => null);
+  if (gate?.allocation?.approved && gate.allocation.allocations.length && !gate.attested) {
+    throw new Error(`target vault not in the DON-attested allocation (AllocationGate ${gate.allocation.gate})`);
+  }
   const amount = pos.shares;
   const calls = [];
   if (pos.vault) calls.push({ target: pos.vault, value: "0", data: encodeFunctionData({ abi: ERC4626_REDEEM_SELF, functionName: "redeemSelf", args: [BigInt(amount)] }) });
@@ -355,6 +363,13 @@ app.post("/api/strategy/propose", async (c) => {
 app.get("/api/attestation/verify", async (c) => {
   if (!LAST_ATTESTATION) return c.json({ error: "no attestation yet" }, 400);
   return c.json({ attestation: LAST_ATTESTATION, verify: await verifyAttestation(LAST_ATTESTATION), attestor: attestorAddress });
+});
+
+// The DON-attested allocation held on-chain by AllocationGate (the EA's gate).
+app.get("/api/gate", async (c) => {
+  const user = ETH_ADDR || LEDGER_ETH;
+  const allocation = await readAttestedAllocation(user);
+  return c.json({ gate: allocationGateAddress(), user, allocation });
 });
 
 // Approve the proposed strategy on the Ledger, then deploy the initial allocation
