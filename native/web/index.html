@@ -30,12 +30,20 @@
   .dot { width:8px; height:8px; border-radius:50%; background:#3a4254; display:inline-block; margin-right:6px; }
   .dot.on { background:var(--ok); }
   .err { color:#ff6b6b; }
+  #busybar { position:sticky; top:0; z-index:10; display:none; align-items:center; gap:10px; background:#1c160c; border:1px solid #3a2f1c; color:var(--warn); padding:11px 16px; border-radius:12px; margin-bottom:16px; font-weight:600; }
+  #busybar.on { display:flex; }
+  .spin { width:16px; height:16px; border:2px solid #5a4a26; border-top-color:var(--warn); border-radius:50%; animation:sp .8s linear infinite; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+  .prog { flex:1; height:4px; background:#2a2212; border-radius:3px; overflow:hidden; }
+  .prog i { display:block; height:100%; width:0; background:var(--warn); transition:width .9s linear; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1><span id="dot" class="dot"></span>Ledger × Unlink</h1>
   <p class="sub">Spending key lives in the Secure Element. Every spend is approved on the device.</p>
+
+  <div id="busybar"><span class="spin"></span><span id="busytxt">Working…</span><span class="prog"><i id="progbar"></i></span><span id="busytimer">0s</span></div>
 
   <div class="card">
     <h2>1 · Connect</h2>
@@ -91,8 +99,22 @@
 const $ = (id) => document.getElementById(id);
 const log = (m, cls="") => { const li=document.createElement("li"); li.innerHTML=cls?`<span class="${cls}">${m}</span>`:m; $("log").prepend(li); };
 const u = (usdc) => String(Math.round(Number(usdc)*1e6));
-let busy=false;
-function setBusy(b){ busy=b; ["bConnect","bShield","bTransfer","bExecute"].forEach(id=>$(id).disabled = b || (id!=="bConnect" && !window.connected)); }
+let busy=false, _timer=null, _t0=0;
+function setBusy(b, label){
+  busy=!!b;
+  // only the action BUTTONS lock (the device is busy, one op at a time) — inputs stay editable
+  ["bConnect","bShield","bTransfer","bExecute"].forEach(id=>$(id).disabled = busy || (id!=="bConnect" && !window.connected));
+  const bar=$("busybar");
+  if(busy){
+    bar.classList.add("on"); $("busytxt").textContent=label||"Working…"; _t0=Date.now();
+    const pb=$("progbar"); pb.style.transition="none"; pb.style.width="0";
+    requestAnimationFrame(()=>{ pb.style.transition="width 28s linear"; pb.style.width="100%"; });
+    $("busytimer").textContent="0s";
+    clearInterval(_timer); _timer=setInterval(()=>{ $("busytimer").textContent=Math.round((Date.now()-_t0)/1000)+"s"; },300);
+  } else {
+    bar.classList.remove("on"); clearInterval(_timer); $("progbar").style.transition="none"; $("progbar").style.width="0";
+  }
+}
 
 async function api(path, body){
   const r = await fetch(path, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(body||{}) });
@@ -104,10 +126,10 @@ function render(d){
   if(d.balances){ const usdc=d.balances.find(b=>b.token.toLowerCase().includes("036cbd")); $("bal").innerHTML = (usdc?usdc.human.replace(" USDC",""):"0.00") + ' <small>USDC</small>'; }
 }
 
-async function connect(){ try{ setBusy(true); log("Connecting… (open the Unlink app + tap to approve)"); const d=await api("/api/connect"); render(d); log(`<b>Connected.</b> ${d.fromCache?"keys from cache":"keys read & cached"}`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
-async function shieldLedger(){ try{ setBusy(true); const amt=u($("shieldAmt").value); log(`Shield ${$("shieldAmt").value} USDC from your Ledger — <b>open the Ethereum app, sign</b>…`); const d=await api("/api/shield-ledger",{amount:amt}); render(d); log(`<b>${d.note}</b> ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
-async function transfer(){ try{ setBusy(true); const amt=u($("xferAmt").value); const recipient=$("recip").value.trim()||undefined; log(`Send ${$("xferAmt").value} USDC${recipient?" to "+recipient.slice(0,14)+"…":" (to yourself)"} — <b>approve on your Ledger</b>…`); const d=await api("/api/transfer",{amount:amt,recipient}); render(d); log(`<b>Sent — ${d.status}</b> (${d.txId}) — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
-async function execute(){ try{ setBusy(true); const amt=u($("execAmt").value); const vault=$("vault").value.trim(); if(!vault){ log("Enter a vault address first.","err"); setBusy(false); return; } log(`Deposit ${$("execAmt").value} USDC to vault ${vault.slice(0,12)}… via EA — <b>approve on your Ledger</b>…`); const d=await api("/api/execute",{amount:amt,vault}); render(d); log(`<b>Deposited to vault via EA</b> — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function connect(){ try{ setBusy(true,"Connecting — approve on your Ledger (Unlink app)"); log("Connecting… (open the Unlink app + tap to approve)"); const d=await api("/api/connect"); render(d); log(`<b>Connected.</b> ${d.fromCache?"keys from cache":"keys read & cached"}`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function shieldLedger(){ try{ setBusy(true,"Shielding — sign Permit2 on your Ledger (Ethereum app)"); const amt=u($("shieldAmt").value); log(`Shield ${$("shieldAmt").value} USDC from your Ledger — <b>open the Ethereum app, sign</b>…`); const d=await api("/api/shield-ledger",{amount:amt}); render(d); log(`<b>${d.note}</b> ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function transfer(){ try{ setBusy(true,"Sending — approve + sign on your Ledger (Unlink app)"); const amt=u($("xferAmt").value); const recipient=$("recip").value.trim()||undefined; log(`Send ${$("xferAmt").value} USDC${recipient?" to "+recipient.slice(0,14)+"…":" (to yourself)"} — <b>approve on your Ledger</b>…`); const d=await api("/api/transfer",{amount:amt,recipient}); render(d); log(`<b>Sent — ${d.status}</b> (${d.txId}) — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function execute(){ const vault=$("vault").value.trim(); if(!vault){ log("Enter a vault address first.","err"); return; } try{ setBusy(true,"Depositing to vault — approve + sign on your Ledger (Unlink app)"); const amt=u($("execAmt").value); log(`Deposit ${$("execAmt").value} USDC to vault ${vault.slice(0,12)}… via EA — <b>approve on your Ledger</b>…`); const d=await api("/api/execute",{amount:amt,vault}); render(d); log(`<b>Deposited to vault via EA</b> — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 </script>
 </body>
 </html>
