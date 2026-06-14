@@ -6,6 +6,7 @@
   "description": "Private DeFi custodied by Ledger. Monorepo: native Ledger app + host bridge + web fronts.",
   "scripts": {
     "web": "node --env-file=.env ledger/web/server.mjs",
+    "demo:chainlink": "node --env-file=.env ledger/cre/scripts/demo.mjs",
     "dev": "vite webapp --port 3000",
     "server": "node --env-file=.env --experimental-strip-types webapp/server/index.ts",
     "dev:all": "concurrently -n web,api -c magenta,cyan \"vite webapp --port 3000\" \"npm run server\"",
