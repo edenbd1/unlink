@@ -21,7 +21,7 @@ import { runConfidentialInference, confidentialAiConfigured } from "../host/conf
 import { mountLocalAttester } from "../host/local-attester.mjs";
 import { readAttestedAllocation, isVaultAttested, allocationGateAddress, writeAttestedAllocation } from "../host/allocation-gate.mjs";
 import { createYieldBot } from "../host/yield-bot.mjs";
-import { sealMandate, unsealMandate, pgpCardAvailable } from "../host/mandate-seal.mjs";
+import { sealStrategy, unsealStrategy, sealMandate, pgpCardAvailable } from "../host/mandate-seal.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env.UNLINK_ENVIRONMENT || "base-sepolia";
@@ -374,23 +374,14 @@ app.post("/api/agent/start", async (c) => {
     rebalance: LAST_STRATEGY?.rebalance || { frequency: "continuous", trigger: "drift from the target weights", rule: "tilt within the band toward the best risk-adjusted APY" },
     approvedAt: Date.now(),
   };
-  // Seal the mandate to the Ledger OpenPGP key, then REQUIRE the physical Ledger
-  // to open it (decrypt + PIN) to arm — the OpenPGP unseal is a hard gate, so the
-  // agent literally cannot start unless the device opens the mandate. The rules
-  // the agent obeys are under hardware custody.
+  // The strategy was already VALIDATED on the Ledger at deploy (OpenPGP decrypt +
+  // PIN), so the agent runs within an allocation the device already opened. Seal
+  // the mandate too, for the record.
   const seal = await sealMandate(mandate);
   mandate.sealed = seal.sealed;
-  if (seal.sealed) {
-    try {
-      const opened = await unsealMandate(); // gpg --decrypt -> scdaemon -> Ledger OpenPGP app (PIN)
-      if (!opened || JSON.stringify(opened.targets) !== JSON.stringify(mandate.targets)) throw new Error("mandate integrity mismatch");
-      mandate.unsealed = true;
-    } catch (e) {
-      return c.json({ error: `Mandate locked. Open the Ledger OpenPGP app and approve (PIN) to arm the agent. (${String(e.message || e).split("\n")[0]})`, needsUnseal: true }, 400);
-    }
-  }
+  mandate.unsealed = LAST_STRATEGY?.validated === true;
   const status = bot.start({ mandate, intervalSec: body.intervalSec });
-  return c.json({ ok: true, seal, unsealed: !!mandate.unsealed, status });
+  return c.json({ ok: true, seal, unsealed: mandate.unsealed, status });
 });
 
 app.post("/api/agent/stop", (c) => c.json({ ok: true, status: bot.stop() }));
@@ -528,12 +519,47 @@ app.get("/api/gate", async (c) => {
   return c.json({ gate: allocationGateAddress(), user, allocation });
 });
 
-// Approve the proposed strategy on the Ledger, then deploy the initial allocation
-// (private pool -> Execution Account -> ERC-4626 vault). Signed in the chip.
+// A canonical, sealable view of the proposed strategy.
+function strategyDoc(s) {
+  return {
+    summary: s.summary, riskLevel: s.riskLevel, blendedApy: s.blendedApy, amountBase: s.amountBase,
+    allocations: s.allocations.map((a) => ({ vault: a.vault, vaultName: a.vaultName, pct: a.pct })),
+    attestation: LAST_ATTESTATION ? { inferenceId: LAST_ATTESTATION.inferenceId, transcriptHash: LAST_ATTESTATION.transcriptHash } : null,
+  };
+}
+
+// Step 1 of confirming a strategy: encrypt it to the Ledger OpenPGP key and
+// REQUIRE the physical device to OPEN it (decrypt + PIN). You can't deploy a
+// strategy your Ledger hasn't validated — the allocation is sealed under hardware
+// custody. Only after this does the Unlink deposit tx run (/api/strategy/deploy).
+app.post("/api/strategy/validate", async (c) => {
+  if (!S) return c.json({ error: "not connected" }, 400);
+  const s = LAST_STRATEGY;
+  if (!s || !s.allocations?.length) return c.json({ error: "propose a strategy first" }, 400);
+  const doc = strategyDoc(s);
+  const seal = await sealStrategy(doc); // encrypt the strategy to the Ledger
+  if (seal.sealed) {
+    try {
+      const opened = await unsealStrategy(); // gpg --decrypt -> Ledger OpenPGP app (PIN)
+      if (JSON.stringify(opened.allocations || []) !== JSON.stringify(doc.allocations)) throw new Error("strategy integrity mismatch");
+      s.validated = true;
+    } catch (e) {
+      s.validated = false;
+      return c.json({ error: `Open the OpenPGP app on your Ledger and enter your PIN to validate the strategy. (${String(e.message || e).split("\n")[0]})`, needsUnseal: true }, 400);
+    }
+  } else {
+    s.validated = true; // no OpenPGP recipient configured — skip the gate (demo)
+  }
+  return c.json({ ok: true, sealed: seal.sealed, validated: true, allocations: s.allocations.map((a) => ({ vaultName: a.vaultName, pct: a.pct })) });
+});
+
+// Step 2: deploy the validated strategy with Unlink (private pool -> Execution
+// Account -> vaults). Requires the OpenPGP validation above first.
 app.post("/api/strategy/deploy", async (c) => {
   if (!S) return c.json({ error: "not connected" }, 400);
   const s = LAST_STRATEGY;
   if (!s || !s.allocations?.length) return c.json({ error: "propose a strategy first" }, 400);
+  if (!s.validated) return c.json({ error: "validate the strategy on your Ledger first (OpenPGP app + PIN)", needsValidate: true }, 400);
 
   // Cap the deploy to the private balance (so a big quoted amount still works).
   const bal = (await balanceList()).find((b) => b.token.toLowerCase().includes("036cbd"));

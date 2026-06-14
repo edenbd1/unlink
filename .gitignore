@@ -30,3 +30,6 @@ ledger/cre/.env
 ledger/cre/yield-allocation-workflow/.cre_build_tmp.js
 
 ledger/cre/simulation/demo-callback.json
+
+ledger/host/.strategy.json
+ledger/host/.strategy.gpg
