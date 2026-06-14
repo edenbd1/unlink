@@ -13,7 +13,23 @@ import { dirname, join } from "node:path";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { bech32m } from "@scure/base";
 import { poseidon1, poseidon3 } from "poseidon-lite";
+import { account as sdkAccount } from "@unlink-xyz/sdk/crypto";
 import { getDeviceSpendingPublicKey, deviceSignSigningRequest } from "./device-signer.mjs";
+
+// The SDK gates ExecutionAccount derivation behind a unique symbol method. Pull
+// the exact symbol from a throwaway seed account so we can implement it on the
+// device account: the device authorizes the pool withdrawal, while this seed
+// (the viewing key) derives the EPHEMERAL Execution Account owner that runs the
+// atomic DeFi call. Lets client.execute (Pool -> vault via EA) work device-side.
+let _seedSym = null;
+function seedBackedSymbol() {
+  if (_seedSym) return _seedSym;
+  const a = sdkAccount.fromSeed({ seed: new Uint8Array(32).fill(1) });
+  for (let o = a; o && !_seedSym; o = Object.getPrototypeOf(o)) {
+    _seedSym = Object.getOwnPropertySymbols(o).find((s) => s.description === "unlink.seedBackedAccountProvider") || null;
+  }
+  return _seedSym;
+}
 
 const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const HRP = "unlink";
@@ -73,7 +89,7 @@ export async function buildDeviceAccount(opts = {}) {
   const { spendingPublicKey, viewingPrivateKey, fromCache } = await loadKeyMaterial(opts);
   const reg = buildRegistration(spendingPublicKey, viewingPrivateKey);
   reg.fromCache = fromCache;
-  return {
+  const acct = {
     ...reg,
     // UnlinkSpendSigner + registration provider, duck-typed for the SDK.
     getAddress: async () => reg.address,
@@ -81,6 +97,11 @@ export async function buildDeviceAccount(opts = {}) {
     getRegistrationPayload: async () => reg,
     signSigningRequest: deviceSignSigningRequest,
   };
+  // Seed-backed hook for ExecutionAccount (vault via EA): the device still
+  // authorizes the pool withdrawal; this only derives the ephemeral EA owner.
+  const sym = seedBackedSymbol();
+  if (sym) acct[sym] = () => ({ seed: Uint8Array.from(viewingPrivateKey), accountIndex: 0 });
+  return acct;
 }
 
 async function sendApduSW(apduHex, timeoutSec = 120) {
