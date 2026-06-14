@@ -176,44 +176,65 @@ app.post("/api/execute", async (c) => {
     if (!approved) return c.json({ error: "rejected on device" }, 400);
     const res = await S.client.execute({ token: USDC, amount, calls });
     const accountIndex = res.execution?.account_index;
-    const pos = { id: String(Date.now()), vault, vaultName, accountIndex, shares: amount };
+    const known = VAULTS.find((v) => v.address.toLowerCase() === vault.toLowerCase());
+    const pos = { id: String(Date.now()), vault, vaultName: known?.name || vaultName, apy: known?.apy, accountIndex, shares: amount };
     POSITIONS.push(pos);
     return c.json({ ok: true, result: res, position: pos, positions: POSITIONS, balances: await balanceList() });
   } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
 });
 
-// Redeem an open vault position: redeemSelf from the SAME Execution Account (a
-// follow-up call, no new private withdrawal), then deposit the USDC back into
-// the private pool. Signed on the Ledger.
+const vaultByAddr = (a) => VAULTS.find((v) => v.address.toLowerCase() === String(a || "").toLowerCase());
+
+// Redeem a vault position back into the SAME Execution Account (redeemSelf, a
+// follow-up call). The USDC stays in the EA, ready to be redeployed into another
+// vault. Signed on the Ledger.
 app.post("/api/redeem", async (c) => {
   if (!S) return c.json({ error: "not connected" }, 400);
   const body = await c.req.json().catch(() => ({}));
   const pos = (body.id && POSITIONS.find((p) => p.id === body.id)) || POSITIONS[POSITIONS.length - 1];
-  if (!pos) return c.json({ error: "no open position to redeem" }, 400);
+  if (!pos || !pos.vault) return c.json({ error: "no open vault position to redeem" }, 400);
   if (pos.accountIndex == null) return c.json({ error: "position has no execution account index" }, 400);
-  const PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
-  const MAX = (1n << 256n) - 1n;
   const calls = [
-    // redeem the shares -> USDC into the Execution Account, then let Permit2 pull
-    // it for the deposit-back into the private pool.
     { target: pos.vault, value: "0", data: encodeFunctionData({ abi: ERC4626_REDEEM_SELF, functionName: "redeemSelf", args: [BigInt(pos.shares)] }) },
-    { target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [PERMIT2, MAX] }) },
   ];
-  const nonce = globalThis.crypto.getRandomValues(new BigUint64Array(1))[0].toString();
-  const deadline = Math.floor(Date.now() / 1000) + 3600;
   try {
     const approved = await reviewPairsOnDevice([
       ["Redeem", human(pos.shares)],
       ["From", pos.vaultName],
-      ["To", "your private pool"],
+      ["To", "Execution Account (idle)"],
     ]);
     if (!approved) return c.json({ error: "rejected on device" }, 400);
-    const res = await S.client.executeAccountCall({
-      accountIndex: pos.accountIndex,
-      calls,
-      depositBack: { token: USDC, amount: pos.shares, nonce, deadline },
-    });
-    POSITIONS = POSITIONS.filter((p) => p.id !== pos.id);
+    const res = await S.client.executeAccountCall({ accountIndex: pos.accountIndex, calls });
+    pos.vault = null; pos.vaultName = "idle in Execution Account"; // USDC now idle in the EA
+    return c.json({ ok: true, result: res, positions: POSITIONS, balances: await balanceList() });
+  } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
+});
+
+// Rebalance a position into another vault, WITHOUT leaving the Execution Account:
+// redeemSelf the current vault, then approve + depositSelf into the target vault.
+// One follow-up call on the same EA, one Ledger approval.
+app.post("/api/rebalance", async (c) => {
+  if (!S) return c.json({ error: "not connected" }, 400);
+  const body = await c.req.json().catch(() => ({}));
+  const pos = (body.id && POSITIONS.find((p) => p.id === body.id)) || POSITIONS[POSITIONS.length - 1];
+  if (!pos) return c.json({ error: "no position to rebalance" }, 400);
+  if (pos.accountIndex == null) return c.json({ error: "position has no execution account index" }, 400);
+  const target = vaultByAddr(body.vault) || VAULTS.find((v) => v.address.toLowerCase() !== String(pos.vault || "").toLowerCase());
+  if (!target) return c.json({ error: "target vault required" }, 400);
+  const amount = pos.shares;
+  const calls = [];
+  if (pos.vault) calls.push({ target: pos.vault, value: "0", data: encodeFunctionData({ abi: ERC4626_REDEEM_SELF, functionName: "redeemSelf", args: [BigInt(amount)] }) });
+  calls.push({ target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [target.address, BigInt(amount)] }) });
+  calls.push({ target: target.address, value: "0", data: encodeFunctionData({ abi: ERC4626_DEPOSIT_SELF, functionName: "depositSelf", args: [BigInt(amount)] }) });
+  try {
+    const approved = await reviewPairsOnDevice([
+      ["Rebalance", human(amount)],
+      ["From", pos.vault ? pos.vaultName : "idle"],
+      ["To", `${target.name} ~${target.apy}%`],
+    ]);
+    if (!approved) return c.json({ error: "rejected on device" }, 400);
+    const res = await S.client.executeAccountCall({ accountIndex: pos.accountIndex, calls });
+    pos.vault = target.address; pos.vaultName = target.name; pos.apy = target.apy;
     return c.json({ ok: true, result: res, positions: POSITIONS, balances: await balanceList() });
   } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
 });
