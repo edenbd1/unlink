@@ -105,8 +105,9 @@
         <span class="pill" id="agState"><span class="dot"></span>idle</span>
         <span class="row" style="gap:6px">
           <span class="pill ledger" id="agSeal" style="display:none">mandate sealed · OpenPGP</span>
-          <button id="bTick" onclick="agentTick()" class="ghost">Tick now</button>
-          <button id="bStop" onclick="stopAgent()" class="ghost">Stop</button>
+          <button id="bArm" onclick="armAgent()">Arm agent</button>
+          <button id="bTick" onclick="agentTick()" class="ghost" style="display:none">Tick now</button>
+          <button id="bStop" onclick="stopAgent()" class="ghost" style="display:none">Stop</button>
           <button onclick="redeemAll()" class="ghost">Redeem all</button>
         </span>
       </div>
@@ -230,30 +231,39 @@ async function deployStrategy(btn){
     const d=await api("/api/strategy/deploy"); render(d);
     document.querySelectorAll(".deployBtn").forEach(b=>{ b.disabled=true; }); if(btn) btn.textContent="deployed ✔";
     const alloc=(d.strategy.allocations||[]).map(a=>`${a.pct}% ${a.vaultName.replace(/^Unlink /,"")}`).join(", ");
-    chatBubble(`<b>Deployed.</b> Allocated ${alloc}, signed on your Ledger ✔. Starting the autonomous agent…`,"bot");
-    // confirm = deploy AND hand it to the autonomous agent, in one go
-    const a=await api("/api/agent/start",{ thresholdPct:1.5, maxPerVaultPct:80, intervalSec:15 });
-    $("agentPanel").style.display="block";
-    renderAgent(a.status); loadGate(); startAgentPoll();
-    chatBubble(`<b>Agent is live.</b> Mandate ${a.seal.sealed?"sealed to your Ledger OpenPGP key ✔":"set (OpenPGP card not present — unsealed)"}. It now rebalances on its own within the DON-attested allocation — each move signed in your Ledger's Secure Element, no tap.`,"bot");
+    chatBubble(`<b>Deployed.</b> Allocated ${alloc}, signed on your Ledger ✔.`,"bot");
+    $("agentPanel").style.display="block"; renderAgent(null); loadGate();
+    chatBubble(`To start the autonomous agent, <b>open the Ledger OpenPGP app</b> and click <b>Arm agent</b> — you'll decrypt the mandate on the device (PIN). The rules the agent obeys stay under hardware custody.`,"bot");
   }catch(e){ if(btn){ btn.disabled=false; btn.textContent="Confirm & deploy on Ledger"; } chatBubble("<span class='err'>"+esc(e.message)+"</span>","bot"); }
   finally{ setBusy(false); }
 }
 
-// --- Autonomous agent (lives inside card 6, auto-armed on confirm) ---
+// --- Autonomous agent (lives inside card 6) ---
 let agentRunning=false, agentPoll=null;
-async function stopAgent(){ try{ const d=await api("/api/agent/stop"); renderAgent(d.status); stopAgentPoll(); chatBubble("<b>Agent stopped.</b> Your funds stay where they are; say the word to start again.","bot"); }catch(e){ chatBubble("<span class='err'>"+esc(e.message)+"</span>","bot"); } }
+async function armAgent(){
+  try{ setBusy(true); $("bArm").disabled=true; $("bArm").textContent="opening on Ledger…";
+    chatBubble("Opening the mandate on your Ledger — <b>OpenPGP app + PIN</b>…","bot");
+    const a=await api("/api/agent/start",{intervalSec:15});
+    renderAgent(a.status); loadGate(); startAgentPoll();
+    chatBubble(`<b>Agent armed.</b> Mandate decrypted on your Ledger (OpenPGP) ✔ — the rules are under hardware custody, nobody could start it without the device. Switch back to the <b>Unlink app</b>; the agent maintains your allocation on its own, each move SE-signed, no tap.`,"bot");
+  }catch(e){ chatBubble("<span class='err'>"+esc(e.message)+"</span>","bot"); chatBubble("Open the <b>Ledger OpenPGP app</b>, then click <b>Arm agent</b> again.","bot"); }
+  finally{ setBusy(false); $("bArm").disabled=false; $("bArm").textContent="Arm agent"; }
+}
+async function stopAgent(){ try{ const d=await api("/api/agent/stop"); renderAgent(d.status); stopAgentPoll(); chatBubble("<b>Agent stopped.</b> Your funds stay where they are.","bot"); }catch(e){ chatBubble("<span class='err'>"+esc(e.message)+"</span>","bot"); } }
 async function agentTick(){ try{ const d=await api("/api/agent/tick"); renderAgent(d.status); }catch(e){ log(e.message,"err"); } }
 function startAgentPoll(){ stopAgentPoll(); agentPoll=setInterval(async()=>{ try{ const s=await (await fetch("/api/agent/status")).json(); renderAgent(s); }catch(_){} }, 3000); }
 function stopAgentPoll(){ if(agentPoll){ clearInterval(agentPoll); agentPoll=null; } }
 let agentLogSeen=0;
 function renderAgent(st){
-  if(!st) return;
-  agentRunning=!!st.running;
-  $("bTick").disabled = !agentRunning;
-  $("bStop").disabled = !agentRunning;
-  $("agState").innerHTML = `<span class="dot ${agentRunning?'on':''}"></span>${agentRunning?`live · ${st.ticks} ticks · ${st.moves} rebalances`:'stopped'}`;
-  $("agSeal").style.display = (st.mandate && st.mandate.sealed)?"inline-block":"none";
+  const running=!!(st && st.running);
+  agentRunning=running;
+  $("bArm").style.display = running?"none":"inline-block";
+  $("bTick").style.display = running?"inline-block":"none";
+  $("bStop").style.display = running?"inline-block":"none";
+  $("bTick").disabled=!running; $("bStop").disabled=!running;
+  $("agState").innerHTML = `<span class="dot ${running?'on':''}"></span>${running?`live · ${st.ticks} ticks · ${st.moves} rebalances`:'not armed'}`;
+  if(!st){ $("agSeal").style.display="none"; return; }
+  if(st.mandate){ $("agSeal").style.display = st.mandate.sealed?"inline-block":"none"; $("agSeal").textContent = st.mandate.unsealed?"mandate opened on Ledger · OpenPGP":"mandate sealed · OpenPGP"; } else $("agSeal").style.display="none";
   $("agApy").innerHTML = (st.apys||[]).map(a=>`<span style="font-size:13px"><b>${a.name.replace(/^Unlink /,"")}</b> <span class="muted">${a.apy}%</span></span>`).join("");
   // stream new agent log lines into the page log once, newest first
   const lines=(st.log||[]).slice().reverse();

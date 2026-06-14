@@ -21,7 +21,7 @@ import { runConfidentialInference, confidentialAiConfigured } from "../host/conf
 import { mountLocalAttester } from "../host/local-attester.mjs";
 import { readAttestedAllocation, isVaultAttested, allocationGateAddress, writeAttestedAllocation } from "../host/allocation-gate.mjs";
 import { createYieldBot } from "../host/yield-bot.mjs";
-import { sealMandate, pgpCardAvailable } from "../host/mandate-seal.mjs";
+import { sealMandate, unsealMandate, pgpCardAvailable } from "../host/mandate-seal.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env.UNLINK_ENVIRONMENT || "base-sepolia";
@@ -373,11 +373,23 @@ app.post("/api/agent/start", async (c) => {
     rebalance: LAST_STRATEGY?.rebalance || { frequency: "continuous", trigger: "drift from the target weights", rule: "tilt within the band toward the best risk-adjusted APY" },
     approvedAt: Date.now(),
   };
-  // Seal the mandate to the Ledger OpenPGP key (only the device can open it).
+  // Seal the mandate to the Ledger OpenPGP key, then REQUIRE the physical Ledger
+  // to open it (decrypt + PIN) to arm — the OpenPGP unseal is a hard gate, so the
+  // agent literally cannot start unless the device opens the mandate. The rules
+  // the agent obeys are under hardware custody.
   const seal = await sealMandate(mandate);
   mandate.sealed = seal.sealed;
+  if (seal.sealed) {
+    try {
+      const opened = await unsealMandate(); // gpg --decrypt -> scdaemon -> Ledger OpenPGP app (PIN)
+      if (!opened || JSON.stringify(opened.targets) !== JSON.stringify(mandate.targets)) throw new Error("mandate integrity mismatch");
+      mandate.unsealed = true;
+    } catch (e) {
+      return c.json({ error: `Mandate locked. Open the Ledger OpenPGP app and approve (PIN) to arm the agent. (${String(e.message || e).split("\n")[0]})`, needsUnseal: true }, 400);
+    }
+  }
   const status = bot.start({ mandate, intervalSec: body.intervalSec });
-  return c.json({ ok: true, seal, status });
+  return c.json({ ok: true, seal, unsealed: !!mandate.unsealed, status });
 });
 
 app.post("/api/agent/stop", (c) => c.json({ ok: true, status: bot.stop() }));

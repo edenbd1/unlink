@@ -128,7 +128,7 @@ export function createYieldBot({ getPositions, rebalancePortfolio, log: emit }) 
           targets: mandate.targets.map((t) => ({ name: t.vaultName, apy: t.apy, address: t.vault, targetPct: t.targetBps / 100 })),
           allowedVaults: mandate.targets.map((t) => ({ name: t.vaultName, apy: t.apy, address: t.vault })),
           bandPct: mandate.bandBps / 100, maxPerVaultPct: mandate.maxPerVaultBps / 100,
-          riskLevel: mandate.riskLevel, approvedAt: mandate.approvedAt, sealed: !!mandate.sealed,
+          riskLevel: mandate.riskLevel, approvedAt: mandate.approvedAt, sealed: !!mandate.sealed, unsealed: !!mandate.unsealed,
         },
         apys: oracle ? oracle.snapshot() : [],
         log: history.slice(0, 20),
