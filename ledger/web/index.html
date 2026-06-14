@@ -36,12 +36,25 @@
   .bubble.bot { align-self:flex-start; background:#0e131c; border:1px solid var(--line); border-bottom-left-radius:4px; }
   .bubble.bot.proposal { max-width:100%; width:100%; }
   .typing { color:var(--mut); font-size:13px; align-self:flex-start; }
+  .devbar { position:sticky; top:8px; z-index:20; display:flex; align-items:center; gap:10px; background:#1c160c; border:1px solid #4a3a1c; color:var(--warn); border-radius:12px; padding:12px 16px; margin:0 0 18px; font-size:14px; font-weight:600; box-shadow:0 8px 28px rgba(0,0,0,.45); }
+  .devbar.ok { background:#0c1812; border-color:#1c3a2c; color:var(--ok); }
+  .spin { width:14px; height:14px; border:2px solid rgba(255,180,84,.3); border-top-color:var(--warn); border-radius:50%; animation:spin .8s linear infinite; flex:0 0 auto; }
+  .devbar.ok .spin { display:none; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .applegend { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 20px; font-size:11px; }
+  .applegend span { padding:3px 9px; border-radius:999px; border:1px solid var(--line); color:var(--mut); }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1><span id="dot" class="dot"></span>Ledger × Unlink</h1>
-  <p class="sub">Spending key lives in the Secure Element. Every spend is approved on the device.</p>
+  <p class="sub">Spending key lives in the Secure Element. Every spend is approved on the device. Your Ledger runs <b>one app at a time</b> — open the one each step asks for, and turn <b>auto-lock OFF</b> (Settings → Security).</p>
+  <div class="applegend">
+    <span>🟦 <b>Unlink app</b> — connect, send, deposit, rebalance</span>
+    <span>🟧 <b>Ethereum app</b> — shield from your Ledger</span>
+    <span>🟪 <b>OpenPGP app</b> — arm the agent (open the mandate)</span>
+  </div>
+  <div id="deviceBar" class="devbar" style="display:none"><span class="spin"></span><span id="deviceBarMsg"></span></div>
 
   <div class="card">
     <h2>1 · Connect</h2>
@@ -63,7 +76,7 @@
     <div class="row" style="margin-top:8px">
       <input id="shieldAmt" value="1" /> <span class="muted">USDC</span>
       <button id="bShield" onclick="shieldLedger()" disabled>Shield from Ledger</button>
-      <span class="pill ledger">Ethereum app</span>
+      <span class="pill ledger">🟧 Ethereum app</span>
     </div>
     <div class="addr" id="ethAddr"></div>
   </div>
@@ -75,7 +88,7 @@
     <div class="row">
       <input id="xferAmt" value="0.5" /> <span class="muted">USDC</span>
       <button id="bTransfer" onclick="transfer()" disabled>Send privately</button>
-      <span class="pill ledger">Ledger approve + sign</span>
+      <span class="pill ledger">🟦 Unlink app</span>
     </div>
   </div>
 
@@ -87,7 +100,7 @@
     <div class="row">
       <input id="execAmt" value="0.1" /> <span class="muted">USDC</span>
       <button id="bExecute" onclick="execute()" disabled>Deposit to vault</button>
-      <span class="pill ledger">Ledger approve + sign</span>
+      <span class="pill ledger">🟦 Unlink app</span>
     </div>
     <div id="positions" style="margin-top:12px"></div>
   </div>
@@ -125,11 +138,13 @@ const $ = (id) => document.getElementById(id);
 const log = (m, cls="") => { const li=document.createElement("li"); li.innerHTML=cls?`<span class="${cls}">${m}</span>`:m; $("log").prepend(li); };
 const u = (usdc) => String(Math.round(Number(usdc)*1e6));
 let busy=false;
+function deviceHint(msg, ok){ const b=$("deviceBar"); if(!b) return; if(msg){ $("deviceBarMsg").innerHTML=msg; b.className="devbar"+(ok?" ok":""); b.style.display="flex"; } else b.style.display="none"; }
 function setBusy(b, label){
   busy=!!b;
   // only the action BUTTONS lock (the device does one op at a time) — inputs stay editable
   ["bConnect","bShield","bTransfer","bExecute","bChat"].forEach(id=>{ const el=$(id); if(el) el.disabled = busy || (id!=="bConnect" && !window.connected); });
   const ci=$("chatInput"); if(ci) ci.disabled = busy || !window.connected;
+  if(b && label) deviceHint(label); else if(!b) deviceHint(null);
 }
 
 async function api(path, body){
@@ -142,18 +157,18 @@ function render(d){
   if(d.balances){ const usdc=d.balances.find(b=>b.token.toLowerCase().includes("036cbd")); $("bal").innerHTML = (usdc?usdc.human.replace(" USDC",""):"0.00") + ' <small>USDC</small>'; }
 }
 
-async function connect(){ try{ setBusy(true,"Connecting — approve on your Ledger (Unlink app)"); log("Connecting… (open the Unlink app + tap to approve)"); const d=await api("/api/connect"); render(d); log(`<b>Connected.</b> ${d.fromCache?"keys from cache":"keys read & cached"}`); try{ const p=await(await fetch("/api/positions")).json(); renderPositions(p.positions); }catch(_){} loadGate(); if(!$("chat").children.length) chatBubble("Hi — I'm your yield co-pilot. Tell me what you'd like to do, e.g. <i>“invest 10,000 USDC, not too aggressive”</i>. I'll propose a strategy and you confirm on your Ledger.","bot"); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
-async function shieldLedger(){ try{ setBusy(true,"Shielding — sign Permit2 on your Ledger (Ethereum app)"); const amt=u($("shieldAmt").value); log(`Shield ${$("shieldAmt").value} USDC from your Ledger — <b>open the Ethereum app, sign</b>…`); const d=await api("/api/shield-ledger",{amount:amt}); render(d); log(`<b>${d.note}</b> ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
-async function transfer(){ try{ setBusy(true,"Sending — approve + sign on your Ledger (Unlink app)"); const amt=u($("xferAmt").value); const recipient=$("recip").value.trim()||undefined; log(`Send ${$("xferAmt").value} USDC${recipient?" to "+recipient.slice(0,14)+"…":" (to yourself)"} — <b>approve on your Ledger</b>…`); const d=await api("/api/transfer",{amount:amt,recipient}); render(d); log(`<b>Sent — ${d.status}</b> (${d.txId}) — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
-async function execute(){ const vault=$("vault").value.trim(); if(!vault){ log("Enter a vault address first.","err"); return; } try{ setBusy(true,"Depositing to vault — approve + sign on your Ledger (Unlink app)"); const amt=u($("execAmt").value); log(`Deposit ${$("execAmt").value} USDC to vault ${vault.slice(0,12)}… via EA — <b>approve on your Ledger</b>…`); const d=await api("/api/execute",{amount:amt,vault}); render(d); renderPositions(d.positions); log(`<b>Deposited — got vault shares</b> (held by the Execution Account, redeemable). Signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function connect(){ try{ setBusy(true,"🟦 Open the <b>Unlink app</b> on your Ledger and tap <b>Approve</b>"); log("Connecting… (open the Unlink app + tap to approve)"); const d=await api("/api/connect"); render(d); log(`<b>Connected.</b> ${d.fromCache?"keys from cache":"keys read & cached"}`); try{ const p=await(await fetch("/api/positions")).json(); renderPositions(p.positions); }catch(_){} loadGate(); if(!$("chat").children.length) chatBubble("Hi — I'm your yield co-pilot. Tell me what you'd like to do, e.g. <i>“invest 10,000 USDC, not too aggressive”</i>. I'll propose a strategy and you confirm on your Ledger.","bot"); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function shieldLedger(){ try{ setBusy(true,"🟧 Open the <b>Ethereum app</b> on your Ledger and <b>sign</b> the deposit"); const amt=u($("shieldAmt").value); log(`Shield ${$("shieldAmt").value} USDC from your Ledger — <b>open the Ethereum app, sign</b>…`); const d=await api("/api/shield-ledger",{amount:amt}); render(d); log(`<b>${d.note}</b> ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function transfer(){ try{ setBusy(true,"🟦 Open the <b>Unlink app</b> and tap <b>Approve</b> on your Ledger"); const amt=u($("xferAmt").value); const recipient=$("recip").value.trim()||undefined; log(`Send ${$("xferAmt").value} USDC${recipient?" to "+recipient.slice(0,14)+"…":" (to yourself)"} — <b>approve on your Ledger</b>…`); const d=await api("/api/transfer",{amount:amt,recipient}); render(d); log(`<b>Sent — ${d.status}</b> (${d.txId}) — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function execute(){ const vault=$("vault").value.trim(); if(!vault){ log("Enter a vault address first.","err"); return; } try{ setBusy(true,"🟦 Open the <b>Unlink app</b> and tap <b>Approve</b> on your Ledger"); const amt=u($("execAmt").value); log(`Deposit ${$("execAmt").value} USDC to vault ${vault.slice(0,12)}… via EA — <b>approve on your Ledger</b>…`); const d=await api("/api/execute",{amount:amt,vault}); render(d); renderPositions(d.positions); log(`<b>Deposited — got vault shares</b> (held by the Execution Account, redeemable). Signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 function renderPositions(positions){ const el=$("positions"); if(!positions||!positions.length){ el.innerHTML=""; return; } const anyOpen=positions.some(p=>p.vault); el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em">Execution Account positions</span>${anyOpen?`<button onclick="redeemAll()" class="ghost" style="padding:5px 10px;font-size:12px">Redeem all</button>`:""}</div>` + positions.map(p=>`
   <div class="row" style="justify-content:space-between;border-top:1px solid var(--line);padding:8px 0;flex-wrap:wrap;gap:6px">
     <span style="font-size:13px"><b style="color:var(--fg)">${(Number(p.shares)/1e6).toFixed(2)} USDC</b> · ${p.vaultName}${p.apy?` <span class="muted">~${p.apy}%</span>`:""}</span>
     <span class="row" style="gap:6px">${p.vault?`<button onclick="rebalance('${p.id}')" class="ghost">Rebalance</button><button onclick="redeem('${p.id}')" class="ghost">Redeem</button>`:`<button onclick="rebalance('${p.id}')" class="ghost">Deploy to vault</button>`}</span>
   </div>`).join(""); }
-async function redeem(id){ try{ setBusy(true,"Redeeming — approve + sign on your Ledger (Unlink app)"); log(`Redeeming vault shares back into the Execution Account — <b>approve on your Ledger</b>…`); const d=await api("/api/redeem",{id}); render(d); renderPositions(d.positions); log(`<b>Redeemed</b> — shares burned, USDC idle in the Execution Account. Signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
-async function redeemAll(){ if(!confirm("Redeem all positions out of the vaults? This stops the agent and pulls the USDC back to your Execution Account.")) return; try{ setBusy(true); log(`Redeeming all positions — <b>approve on your Ledger</b>…`); if(typeof chatBubble==="function") chatBubble("Pulling all positions out of the vaults — approve on your Ledger…","bot"); const d=await api("/api/redeem-all"); render(d); renderPositions(d.positions); loadGate(); try{ const s=await(await fetch("/api/agent/status")).json(); renderAgent(s); }catch(_){} log(`<b>Redeemed all</b> — ${d.redeemed} out of ${d.count} vault(s), idle in the Execution Account. Agent stopped. Signed on device ✔`); if(typeof chatBubble==="function") chatBubble(`<b>Done.</b> ${d.redeemed} pulled out of ${d.count} vault(s), now idle in your Execution Account. The agent is stopped.`,"bot"); }catch(e){ log(e.message,"err"); if(typeof chatBubble==="function") chatBubble("<span class='err'>"+esc(e.message)+"</span>","bot"); } finally{ setBusy(false); } }
-async function rebalance(id){ try{ setBusy(true,"Rebalancing — approve + sign on your Ledger (Unlink app)"); log(`Rebalancing to the other vault (within the Execution Account) — <b>approve on your Ledger</b>…`); const d=await api("/api/rebalance",{id}); render(d); renderPositions(d.positions); log(`<b>Rebalanced</b> — moved to a new vault without leaving the Execution Account. Signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function redeem(id){ try{ setBusy(true,"🟦 Open the <b>Unlink app</b> and tap <b>Approve</b> on your Ledger"); log(`Redeeming vault shares back into the Execution Account — <b>approve on your Ledger</b>…`); const d=await api("/api/redeem",{id}); render(d); renderPositions(d.positions); log(`<b>Redeemed</b> — shares burned, USDC idle in the Execution Account. Signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function redeemAll(){ if(!confirm("Redeem all positions out of the vaults? This stops the agent and pulls the USDC back to your Execution Account.")) return; try{ setBusy(true,"🟦 Open the <b>Unlink app</b> and tap <b>Approve</b> on your Ledger"); log(`Redeeming all positions — <b>approve on your Ledger</b>…`); if(typeof chatBubble==="function") chatBubble("Pulling all positions out of the vaults — approve on your Ledger…","bot"); const d=await api("/api/redeem-all"); render(d); renderPositions(d.positions); loadGate(); try{ const s=await(await fetch("/api/agent/status")).json(); renderAgent(s); }catch(_){} log(`<b>Redeemed all</b> — ${d.redeemed} out of ${d.count} vault(s), idle in the Execution Account. Agent stopped. Signed on device ✔`); if(typeof chatBubble==="function") chatBubble(`<b>Done.</b> ${d.redeemed} pulled out of ${d.count} vault(s), now idle in your Execution Account. The agent is stopped.`,"bot"); }catch(e){ log(e.message,"err"); if(typeof chatBubble==="function") chatBubble("<span class='err'>"+esc(e.message)+"</span>","bot"); } finally{ setBusy(false); } }
+async function rebalance(id){ try{ setBusy(true,"🟦 Open the <b>Unlink app</b> and tap <b>Approve</b> on your Ledger"); log(`Rebalancing to the other vault (within the Execution Account) — <b>approve on your Ledger</b>…`); const d=await api("/api/rebalance",{id}); render(d); renderPositions(d.positions); log(`<b>Rebalanced</b> — moved to a new vault without leaving the Execution Account. Signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 
 function chatBubble(html, cls){ const d=document.createElement("div"); d.className="bubble "+cls; d.innerHTML=html; $("chat").appendChild(d); $("chat").scrollTop=$("chat").scrollHeight; return d; }
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
@@ -224,10 +239,10 @@ function renderProposal(s, att, verify){
     <div style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin-top:8px">Autonomous rebalancing</div>
     <p class="muted" style="font-size:13px;margin:4px 0">${rb.frequency?rb.frequency+" · ":""}${rb.trigger||""}${rb.rule?". "+rb.rule:""}</p>
     ${renderAttestation(att, verify)}
-    <div class="row" style="margin-top:12px"><button class="deployBtn" onclick="deployStrategy(this)">Confirm &amp; deploy on Ledger</button> <span class="pill ledger">Ledger approve + sign</span></div>`;
+    <div class="row" style="margin-top:12px"><button class="deployBtn" onclick="deployStrategy(this)">Confirm &amp; deploy on Ledger</button> <span class="pill ledger">🟦 Unlink app</span></div>`;
 }
 async function deployStrategy(btn){
-  try{ setBusy(true); if(btn){ btn.disabled=true; btn.textContent="approve on your Ledger…"; }
+  try{ setBusy(true,"🟦 Open the <b>Unlink app</b> and tap <b>Approve</b> on your Ledger — watch the device"); if(btn){ btn.disabled=true; btn.textContent="approve on your Ledger…"; }
     const d=await api("/api/strategy/deploy"); render(d);
     document.querySelectorAll(".deployBtn").forEach(b=>{ b.disabled=true; }); if(btn) btn.textContent="deployed ✔";
     const alloc=(d.strategy.allocations||[]).map(a=>`${a.pct}% ${a.vaultName.replace(/^Unlink /,"")}`).join(", ");
@@ -241,7 +256,7 @@ async function deployStrategy(btn){
 // --- Autonomous agent (lives inside card 6) ---
 let agentRunning=false, agentPoll=null;
 async function armAgent(){
-  try{ setBusy(true); $("bArm").disabled=true; $("bArm").textContent="opening on Ledger…";
+  try{ setBusy(true,"🟪 Open the <b>OpenPGP app</b> on your Ledger and enter your <b>PIN</b>"); $("bArm").disabled=true; $("bArm").textContent="opening on Ledger…";
     chatBubble("Opening the mandate on your Ledger — <b>OpenPGP app + PIN</b>…","bot");
     const a=await api("/api/agent/start",{intervalSec:15});
     renderAgent(a.status); loadGate(); startAgentPoll();
