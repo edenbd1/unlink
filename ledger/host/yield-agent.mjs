@@ -57,58 +57,93 @@ async function askLLM(system, user) {
   return null;
 }
 
-const fmt = (base) => (Number(base) / 1e6).toFixed(2) + " USDC";
+const fmt = (base) => "$" + (Number(base) / 1e6).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-// vaults: [{ address, name, apy }]  amountBase: USDC base units (6 decimals)
+// Normalize an allocation list: map each entry to a known vault, keep positive
+// integer percentages, and fix rounding so they sum to exactly 100.
+function normalizeAllocations(allocs, vaults) {
+  const byName = (n) => vaults.find((v) => v.name.toLowerCase() === String(n || "").toLowerCase());
+  const byAddr = (a) => vaults.find((v) => v.address.toLowerCase() === String(a || "").toLowerCase());
+  const out = (allocs || [])
+    .map((a) => {
+      const v = byAddr(a.vault) || byName(a.vaultName) || byName(a.name);
+      return v ? { vault: v.address, vaultName: v.name, apy: v.apy, risk: v.risk, pct: Math.max(0, Math.round(Number(a.pct) || 0)) } : null;
+    })
+    .filter((a) => a && a.pct > 0);
+  if (!out.length) return null;
+  out[0].pct += 100 - out.reduce((s, a) => s + a.pct, 0);
+  return out;
+}
+
+const blended = (allocs) => Math.round(allocs.reduce((s, a) => s + (a.pct / 100) * a.apy, 0) * 10) / 10;
+
+// vaults: [{ address, name, apy, risk }]  amountBase: USDC base units (6 decimals)
 export async function proposeStrategy({ goals, amountBase, vaults }) {
   const sorted = [...vaults].sort((a, b) => b.apy - a.apy);
-  const best = sorted[0];
 
   const system =
-    "You are a conservative DeFi yield strategist. The user holds a PRIVATE USDC " +
-    "balance in the Unlink privacy pool and wants to put it to work in ERC-4626 " +
-    "vaults via an Execution Account. You only PROPOSE; the user approves on a " +
-    "Ledger hardware wallet, which is the only thing that can move funds. " +
-    "Reply ONLY with a JSON object: { summary, riskLevel ('low'|'medium'|'high'), " +
-    "vault (one of the given addresses), vaultName, apy (number), rebalanceRule " +
-    "(short sentence), rationale (2 short sentences) }. Pick the vault that best " +
-    "fits the user's goals; prefer the highest APY unless they ask for lower risk.";
+    "You are an autonomous DeFi yield strategist managing a user's PRIVATE USDC " +
+    "balance (held in the Unlink privacy pool). You allocate across ERC-4626 vaults " +
+    "via an Execution Account, and an automated agent later rebalances within the " +
+    "mandate the user approves on a Ledger hardware wallet. You only PROPOSE; only " +
+    "the Ledger moves funds.\n" +
+    "Design a real PORTFOLIO: diversify the capital across two or more vaults (do " +
+    "not put everything in one vault unless the goals truly demand it). Match the " +
+    "risk to the user's words.\n" +
+    "Reply ONLY with JSON: { summary (one line), riskLevel ('low'|'medium'|'high'), " +
+    "allocations: [{ vaultName, pct (integer) }] (pct sum to 100), rebalance: " +
+    "{ frequency, trigger, rule } (short strings), rationale (2-3 sentences on the " +
+    "split and the plan) }.";
   const user =
     `Goals: ${goals || "safe, steady yield on my USDC"}\n` +
-    `Amount to deploy: ${fmt(amountBase)}\n` +
-    `Available vaults (ERC-4626, USDC):\n` +
-    vaults.map((v) => `- ${v.name} (${v.address}) ~${v.apy}% APY`).join("\n");
+    `Capital to deploy: ${fmt(amountBase)}\n` +
+    `Vaults (ERC-4626, USDC):\n` +
+    vaults.map((v) => `- ${v.name}: ~${v.apy}% APY, ${v.risk} risk`).join("\n");
 
   const res = await askLLM(system, user);
-  const ai = res?.json;
-  if (ai && ai.vault) {
+  const aiAllocs = res?.json && normalizeAllocations(res.json.allocations, vaults);
+  if (aiAllocs) {
+    const ai = res.json;
     return {
       source: res.model,
       summary: ai.summary || "AI yield strategy",
-      riskLevel: ai.riskLevel || "low",
-      vault: ai.vault,
-      vaultName: ai.vaultName || best.name,
-      apy: ai.apy ?? best.apy,
+      riskLevel: ai.riskLevel || "medium",
       amountBase,
-      rebalanceRule: ai.rebalanceRule || `Move to the highest-APY vault if APY drops below ${(best.apy - 1).toFixed(1)}% for 24h`,
+      allocations: aiAllocs,
+      blendedApy: blended(aiAllocs),
+      rebalance: {
+        frequency: ai.rebalance?.frequency || "weekly",
+        trigger: ai.rebalance?.trigger || "an APY gap above 1.5% between vaults",
+        rule: ai.rebalance?.rule || "shift toward the best risk-adjusted APY, capped per vault",
+      },
       rationale: ai.rationale || "",
     };
   }
 
-  // Deterministic fallback: aggressive goals -> highest APY, else the low-risk vault.
-  const wantsRisk = /aggress|high|max|degen|growth|risk/i.test(goals || "");
-  const pick = wantsRisk ? best : (vaults.find((v) => v.risk === "low") || sorted[sorted.length - 1]);
+  // Deterministic fallback: a real diversified split by risk appetite.
+  const low = vaults.find((v) => v.risk === "low") || sorted[sorted.length - 1];
+  const high = vaults.find((v) => v.risk === "high") || sorted[0];
+  let split, level, label;
+  if (/aggress|max|degen|risk\s*on|high\s*risk/i.test(goals || "")) { split = [25, 75]; level = "high"; label = "Growth-tilted"; }
+  else if (/safe|low|conserv|preserv|stable|capital/i.test(goals || "")) { split = [75, 25]; level = "low"; label = "Capital-preserving"; }
+  else { split = [50, 50]; level = "medium"; label = "Balanced"; }
+  const allocations = normalizeAllocations(
+    [{ vaultName: low.name, pct: split[0] }, { vaultName: high.name, pct: split[1] }], vaults);
+  const bApy = blended(allocations);
   return {
     source: "rule",
-    summary: wantsRisk ? "Growth USDC yield" : "Conservative USDC yield",
-    riskLevel: wantsRisk ? "high" : "low",
-    vault: pick.address,
-    vaultName: pick.name,
-    apy: pick.apy,
+    summary: `${label} USDC yield, ~${bApy}% blended APY`,
+    riskLevel: level,
     amountBase,
-    rebalanceRule: `Move to the highest-APY vault if the current APY drops below ${(pick.apy - 1).toFixed(1)}% for 24h`,
+    allocations,
+    blendedApy: bApy,
+    rebalance: {
+      frequency: "weekly",
+      trigger: "an APY gap above 1.5% between the vaults, sustained 24h",
+      rule: `shift toward the higher risk-adjusted APY, capped at ${level === "high" ? 80 : 60}% per vault`,
+    },
     rationale:
-      `Deploy ${fmt(amountBase)} into ${pick.name} at ~${pick.apy}% APY, from your private balance via an Execution Account. ` +
-      `Your Ledger approves the deployment; an agent then watches the APY and rebalances within this mandate.`,
+      `Diversify ${fmt(amountBase)} as ${split[0]}% ${low.name} and ${split[1]}% ${high.name} for a ~${bApy}% blended APY at ${level} risk. ` +
+      `Your Ledger approves this mandate once; the agent then rebalances weekly within it, so you never tap for routine moves.`,
   };
 }

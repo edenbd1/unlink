@@ -127,12 +127,28 @@ async function transfer(){ try{ setBusy(true,"Sending — approve + sign on your
 async function execute(){ const vault=$("vault").value.trim(); if(!vault){ log("Enter a vault address first.","err"); return; } try{ setBusy(true,"Depositing to vault — approve + sign on your Ledger (Unlink app)"); const amt=u($("execAmt").value); log(`Deposit ${$("execAmt").value} USDC to vault ${vault.slice(0,12)}… via EA — <b>approve on your Ledger</b>…`); const d=await api("/api/execute",{amount:amt,vault}); render(d); log(`<b>Deposited to vault via EA</b> — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 
 async function propose(){ try{ setBusy(true,"Co-pilot is thinking…"); const amt=u($("stratAmt").value); const goals=$("goals").value.trim(); log(`Co-pilot designing a strategy for ${$("stratAmt").value} USDC…`); const d=await api("/api/strategy/propose",{amount:amt,goals}); renderStrategy(d.strategy); log(`<b>Strategy proposed</b> (${d.strategy.source==="rule"?"rule-based":"AI · "+d.strategy.source}). Review and approve on your Ledger.`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
-function renderStrategy(s){ const el=$("strategy"); el.style.display="block"; el.innerHTML = `
-  <div style="font-weight:600;font-size:15px">${s.summary} <span class="pill">${s.riskLevel} risk</span> <span class="pill">${s.source==="rule"?"rule-based":"AI · "+s.source}</span></div>
-  <p class="muted" style="margin:6px 0">${s.rationale||""}</p>
-  <div class="muted" style="font-size:13px">Allocate to <b style="color:var(--fg)">${s.vaultName}</b> · ~${s.apy}% APY</div>
-  <div class="muted" style="font-size:13px">Rebalance: ${s.rebalanceRule}</div>
-  <div class="row" style="margin-top:10px"><button id="bDeploy" onclick="deployStrategy()">Approve &amp; deploy on Ledger</button> <span class="pill ledger">Ledger approve + sign</span></div>`; }
+function renderStrategy(s){
+  const el=$("strategy"); el.style.display="block";
+  const bars = (s.allocations||[]).map(a=>`
+    <div style="margin:8px 0">
+      <div style="display:flex;justify-content:space-between;font-size:13px"><span><b style="color:var(--fg)">${a.pct}%</b> ${a.vaultName} <span class="muted">~${a.apy}% APY</span></span></div>
+      <div style="height:7px;background:#0e121a;border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-top:3px"><i style="display:block;height:100%;width:${a.pct}%;background:var(--acc)"></i></div>
+    </div>`).join("");
+  const rb=s.rebalance||{};
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <div style="font-weight:700;font-size:15px">${s.summary}</div>
+      <span class="pill" style="color:var(--ok);border-color:#1c3a2c">~${s.blendedApy}% blended</span>
+      <span class="pill">${s.riskLevel} risk</span>
+      <span class="pill ledger">${s.source==="rule"?"rule-based":"AI · "+s.source}</span>
+    </div>
+    <p class="muted" style="margin:8px 0 6px">${s.rationale||""}</p>
+    <div style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin-top:10px">Portfolio allocation</div>
+    ${bars}
+    <div style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin-top:8px">Autonomous rebalancing</div>
+    <p class="muted" style="font-size:13px;margin:4px 0">${rb.frequency?rb.frequency+" · ":""}${rb.trigger||""}${rb.rule?". "+rb.rule:""}</p>
+    <div class="row" style="margin-top:12px"><button id="bDeploy" onclick="deployStrategy()">Approve &amp; deploy on Ledger</button> <span class="pill ledger">Ledger approve + sign</span></div>`;
+}
 async function deployStrategy(){ try{ setBusy(true,"Deploying strategy — approve on your Ledger"); log(`Deploying the strategy — <b>approve on your Ledger</b>…`); const d=await api("/api/strategy/deploy"); render(d); $("strategy").style.display="none"; log(`<b>Strategy deployed</b> — funds allocated to ${d.strategy.vaultName}, signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 </script>
 </body>

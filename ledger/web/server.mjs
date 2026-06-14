@@ -186,22 +186,33 @@ app.post("/api/strategy/propose", async (c) => {
 app.post("/api/strategy/deploy", async (c) => {
   if (!S) return c.json({ error: "not connected" }, 400);
   const s = LAST_STRATEGY;
-  if (!s) return c.json({ error: "propose a strategy first" }, 400);
-  const amount = s.amountBase;
+  if (!s || !s.allocations?.length) return c.json({ error: "propose a strategy first" }, 400);
+  const total = BigInt(s.amountBase);
   const receiver = ETH_ADDR || LEDGER_ETH;
-  const calls = [
-    { target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [s.vault, BigInt(amount)] }) },
-    { target: s.vault, value: "0", data: encodeFunctionData({ abi: ERC4626_DEPOSIT, functionName: "deposit", args: [BigInt(amount), receiver] }) },
-  ];
+
+  // split the capital across the allocations (the last one gets the remainder)
+  let allocated = 0n;
+  const parts = s.allocations.map((a, i) => {
+    const amt = i === s.allocations.length - 1 ? total - allocated : (total * BigInt(a.pct)) / 100n;
+    allocated += i === s.allocations.length - 1 ? 0n : amt;
+    return { ...a, amount: amt };
+  });
+  // one Execution Account, one Ledger approval: approve + deposit per vault
+  const calls = parts.flatMap((p) => [
+    { target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [p.vault, p.amount] }) },
+    { target: p.vault, value: "0", data: encodeFunctionData({ abi: ERC4626_DEPOSIT, functionName: "deposit", args: [p.amount, receiver] }) },
+  ]);
+
+  const allocStr = s.allocations.map((a) => `${a.pct}% ${a.vaultName.replace(/^Unlink /, "")}`).join(", ");
   try {
     const approved = await reviewPairsOnDevice([
       ["Strategy", s.summary],
-      ["Deploy", human(amount)],
-      ["Vault", `${s.vaultName} ~${s.apy}%`],
-      ["Rebalance", s.rebalanceRule],
+      ["Deploy", human(s.amountBase)],
+      ["Allocation", allocStr],
+      ["Rebalance", `${s.rebalance.frequency}: ${s.rebalance.trigger}`],
     ]);
     if (!approved) return c.json({ error: "strategy rejected on device" }, 400);
-    const res = await S.client.execute({ token: USDC, amount, calls });
+    const res = await S.client.execute({ token: USDC, amount: s.amountBase, calls });
     return c.json({ ok: true, result: res, strategy: s, balances: await balanceList() });
   } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
 });
