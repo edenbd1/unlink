@@ -16,6 +16,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import { buildDeviceAccount, reviewIntentOnDevice, reviewPairsOnDevice, connectApproveOnDevice } from "../host/device-account.mjs";
 import { ledgerEthClients, getLedgerEthAddress } from "../host/ledger-eth-account.mjs";
+import { proposeStrategy } from "../host/yield-agent.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env.UNLINK_ENVIRONMENT || "base-sepolia";
@@ -25,6 +26,13 @@ const USDC = process.env.DEMO_TOKEN || "0x036CbD53842c5426634e7929541eC2318f3dCF
 const DEMO_VAULT = process.env.DEMO_VAULT || "0xaf1ac7cd3f19e008129d1b7cd8da5daa09143482"; // ERC-4626 demo vault (USDC)
 const LEDGER_ETH = process.env.LEDGER_ETH_ADDRESS || "0x065dF3372c1f9f86f5cfC220db027da2A754fdbF";
 const PORT = Number(process.env.WEB_PORT || 8799);
+
+// ERC-4626 USDC vaults the yield agent can allocate to (real, on Base Sepolia).
+const VAULTS = [
+  { address: (process.env.DEMO_VAULT || "0xaf1ac7cd3f19e008129d1b7cd8da5daa09143482"), name: "Unlink Stable Vault", apy: 4.2, risk: "low" },
+  { address: (process.env.DEMO_VAULT_B || "0x9cabfc6a6f8711767f3d89ff6e08be8fa22dc453"), name: "Unlink Growth Vault", apy: 7.8, risk: "high" },
+];
+let LAST_STRATEGY = null; // last proposed strategy, deployed on approval
 
 let S = null; // { account, admin, client, address }
 let ETH_ADDR = null; // cached Ledger ETH address (vault-share receiver)
@@ -154,6 +162,47 @@ app.post("/api/execute", async (c) => {
     if (!approved) return c.json({ error: "rejected on device" }, 400);
     const res = await S.client.execute({ token: USDC, amount, calls });
     return c.json({ ok: true, result: res, balances: await balanceList() });
+  } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
+});
+
+// --- AI yield co-pilot -------------------------------------------------------
+// Describe your goals, the agent proposes a concrete strategy. It signs nothing;
+// the only thing that deploys funds is your Ledger approval.
+app.get("/api/strategy/vaults", (c) => c.json({ vaults: VAULTS }));
+
+app.post("/api/strategy/propose", async (c) => {
+  if (!S) return c.json({ error: "not connected" }, 400);
+  const body = await c.req.json().catch(() => ({}));
+  const amountBase = body.amount || "100000";
+  try {
+    const strategy = await proposeStrategy({ goals: body.goals || "", amountBase, vaults: VAULTS });
+    LAST_STRATEGY = strategy;
+    return c.json({ ok: true, strategy });
+  } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
+});
+
+// Approve the proposed strategy on the Ledger, then deploy the initial allocation
+// (private pool -> Execution Account -> ERC-4626 vault). Signed in the chip.
+app.post("/api/strategy/deploy", async (c) => {
+  if (!S) return c.json({ error: "not connected" }, 400);
+  const s = LAST_STRATEGY;
+  if (!s) return c.json({ error: "propose a strategy first" }, 400);
+  const amount = s.amountBase;
+  const receiver = ETH_ADDR || LEDGER_ETH;
+  const calls = [
+    { target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [s.vault, BigInt(amount)] }) },
+    { target: s.vault, value: "0", data: encodeFunctionData({ abi: ERC4626_DEPOSIT, functionName: "deposit", args: [BigInt(amount), receiver] }) },
+  ];
+  try {
+    const approved = await reviewPairsOnDevice([
+      ["Strategy", s.summary],
+      ["Deploy", human(amount)],
+      ["Vault", `${s.vaultName} ~${s.apy}%`],
+      ["Rebalance", s.rebalanceRule],
+    ]);
+    if (!approved) return c.json({ error: "strategy rejected on device" }, 400);
+    const res = await S.client.execute({ token: USDC, amount, calls });
+    return c.json({ ok: true, result: res, strategy: s, balances: await balanceList() });
   } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
 });
 

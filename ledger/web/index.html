@@ -85,6 +85,18 @@
     </div>
   </div>
 
+  <div class="card">
+    <h2>6 · AI yield co-pilot</h2>
+    <p class="muted">Describe your goals. The agent proposes a yield strategy across vaults. It signs nothing; only your Ledger deploys the funds.</p>
+    <input id="goals" value="safe steady yield on my USDC" placeholder="e.g. aggressive growth, or safe steady yield" style="width:100%;margin:6px 0" />
+    <div class="row">
+      <input id="stratAmt" value="0.1" /> <span class="muted">USDC</span>
+      <button id="bPropose" onclick="propose()" disabled>Propose strategy</button>
+      <span class="pill">AI advises, never signs</span>
+    </div>
+    <div id="strategy" style="display:none;margin-top:14px"></div>
+  </div>
+
   <ul class="log" id="log"></ul>
 </div>
 
@@ -96,7 +108,7 @@ let busy=false;
 function setBusy(b, label){
   busy=!!b;
   // only the action BUTTONS lock (the device does one op at a time) — inputs stay editable
-  ["bConnect","bShield","bTransfer","bExecute"].forEach(id=>$(id).disabled = busy || (id!=="bConnect" && !window.connected));
+  ["bConnect","bShield","bTransfer","bExecute","bPropose","bDeploy"].forEach(id=>{ const el=$(id); if(el) el.disabled = busy || (id!=="bConnect" && !window.connected); });
 }
 
 async function api(path, body){
@@ -113,6 +125,15 @@ async function connect(){ try{ setBusy(true,"Connecting — approve on your Ledg
 async function shieldLedger(){ try{ setBusy(true,"Shielding — sign Permit2 on your Ledger (Ethereum app)"); const amt=u($("shieldAmt").value); log(`Shield ${$("shieldAmt").value} USDC from your Ledger — <b>open the Ethereum app, sign</b>…`); const d=await api("/api/shield-ledger",{amount:amt}); render(d); log(`<b>${d.note}</b> ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 async function transfer(){ try{ setBusy(true,"Sending — approve + sign on your Ledger (Unlink app)"); const amt=u($("xferAmt").value); const recipient=$("recip").value.trim()||undefined; log(`Send ${$("xferAmt").value} USDC${recipient?" to "+recipient.slice(0,14)+"…":" (to yourself)"} — <b>approve on your Ledger</b>…`); const d=await api("/api/transfer",{amount:amt,recipient}); render(d); log(`<b>Sent — ${d.status}</b> (${d.txId}) — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 async function execute(){ const vault=$("vault").value.trim(); if(!vault){ log("Enter a vault address first.","err"); return; } try{ setBusy(true,"Depositing to vault — approve + sign on your Ledger (Unlink app)"); const amt=u($("execAmt").value); log(`Deposit ${$("execAmt").value} USDC to vault ${vault.slice(0,12)}… via EA — <b>approve on your Ledger</b>…`); const d=await api("/api/execute",{amount:amt,vault}); render(d); log(`<b>Deposited to vault via EA</b> — signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+
+async function propose(){ try{ setBusy(true,"Co-pilot is thinking…"); const amt=u($("stratAmt").value); const goals=$("goals").value.trim(); log(`Co-pilot designing a strategy for ${$("stratAmt").value} USDC…`); const d=await api("/api/strategy/propose",{amount:amt,goals}); renderStrategy(d.strategy); log(`<b>Strategy proposed</b> (${d.strategy.source==="claude"?"AI":"rule-based"}). Review and approve on your Ledger.`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+function renderStrategy(s){ const el=$("strategy"); el.style.display="block"; el.innerHTML = `
+  <div style="font-weight:600;font-size:15px">${s.summary} <span class="pill">${s.riskLevel} risk</span> <span class="pill">${s.source==="claude"?"AI":"rule-based"}</span></div>
+  <p class="muted" style="margin:6px 0">${s.rationale||""}</p>
+  <div class="muted" style="font-size:13px">Allocate to <b style="color:var(--fg)">${s.vaultName}</b> · ~${s.apy}% APY</div>
+  <div class="muted" style="font-size:13px">Rebalance: ${s.rebalanceRule}</div>
+  <div class="row" style="margin-top:10px"><button id="bDeploy" onclick="deployStrategy()">Approve &amp; deploy on Ledger</button> <span class="pill ledger">Ledger approve + sign</span></div>`; }
+async function deployStrategy(){ try{ setBusy(true,"Deploying strategy — approve on your Ledger"); log(`Deploying the strategy — <b>approve on your Ledger</b>…`); const d=await api("/api/strategy/deploy"); render(d); $("strategy").style.display="none"; log(`<b>Strategy deployed</b> — funds allocated to ${d.strategy.vaultName}, signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 </script>
 </body>
 </html>
