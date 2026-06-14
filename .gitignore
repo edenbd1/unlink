@@ -18,3 +18,10 @@ ledger/host/.device-keys.json
 # sealed/unsealed agent mandate (OpenPGP)
 ledger/host/.mandate.json
 ledger/host/.mandate.gpg
+
+# CRE workflow build + deps
+ledger/cre/yield-allocation-workflow/node_modules/
+ledger/cre/yield-allocation-workflow/dist/
+ledger/cre/out/
+ledger/cre/cache/
+ledger/cre/.env

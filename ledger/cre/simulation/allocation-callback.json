@@ -1,0 +1,25 @@
+{
+  "id": "01984c7a-1f30-7bb2-9a01-aef39d20c511",
+  "status": "completed",
+  "model": "qwen3.6",
+  "system_prompt": "You are an autonomous DeFi yield strategist analysing a user's PRIVATE financial profile inside a TEE. Diversify the capital across the given ERC-4626 vaults and match the risk to the user's words.",
+  "prompt": "Private profile (confidential): goals=\"$10,000, steady yield, not too aggressive, good APY\"; capital=10000 USDC; current Unlink private balance=10000 USDC. Vaults: Unlink Stable Vault 0xedf18f946344395d9fc5e20a67289ccce3f25b6f ~4.2% low risk; Unlink Growth Vault 0xe7c683e76b3a99d32cbda67beb33eedacaf6f90f ~7.8% high risk. Respond with ONLY a JSON object: {\"approved\":bool,\"risk_level\":\"low|medium|high\",\"blended_apy_bps\":int,\"reason\":\"one sentence\",\"allocations\":[{\"vault\":\"0x..\",\"name\":\"..\",\"bps\":int}] (bps sum 10000)}.",
+  "output": "```json\n{\n  \"approved\": true,\n  \"risk_level\": \"medium\",\n  \"blended_apy_bps\": 582,\n  \"reason\": \"A 60/40 split into the Stable Vault preserves most of the $10,000 while the Growth Vault lifts the blended yield to ~5.82% APY, matching a not-too-aggressive mandate.\",\n  \"allocations\": [\n    { \"vault\": \"0xedf18f946344395d9fc5e20a67289ccce3f25b6f\", \"name\": \"Unlink Stable Vault\", \"bps\": 6000 },\n    { \"vault\": \"0xe7c683e76b3a99d32cbda67beb33eedacaf6f90f\", \"name\": \"Unlink Growth Vault\", \"bps\": 4000 }\n  ]\n}\n```",
+  "usage": { "prompt_tokens": 742, "completion_tokens": 268 },
+  "resources": [
+    {
+      "url": "inline://profile.json",
+      "digest": "5f2c8e1b9a47d6033c0e8b71a2f49d5c6e8b0a1d3f7c2e9b4a6d8013c5f7e2a9",
+      "request_digest": "a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f7081920a3b4c5d6e7f80",
+      "response_digest": "7d4e9c2a1b8f60533e2a9d0c4b71f85a6c3e0b29d8f147a05b6e3c2d9f08a1b4",
+      "content_type": "application/json",
+      "preprocessed": true,
+      "filename_digest": "c4d832cdc8b2d7d278a27ba07ea33cb63befe493357887ba17660f7f912722d4",
+      "filename_blinding": "76bd8252ac7d1701ec93262d8c99140a"
+    }
+  ],
+  "created_at": "2026-06-14T02:10:19.747317507Z",
+  "started_at": "2026-06-14T02:10:19.747505066Z",
+  "status_at": "2026-06-14T02:10:48.697160326Z",
+  "completed_at": "2026-06-14T02:10:43.94999687Z"
+}

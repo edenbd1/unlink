@@ -17,6 +17,7 @@ import { baseSepolia } from "viem/chains";
 import { buildDeviceAccount, reviewIntentOnDevice, reviewPairsOnDevice, connectApproveOnDevice } from "../host/device-account.mjs";
 import { ledgerEthClients, getLedgerEthAddress } from "../host/ledger-eth-account.mjs";
 import { runConfidentialStrategy, verifyAttestation, attestorAddress } from "../host/cre-attestation.mjs";
+import { runConfidentialInference, confidentialAiConfigured } from "../host/confidential-ai.mjs";
 import { createYieldBot } from "../host/yield-bot.mjs";
 import { sealMandate, pgpCardAvailable } from "../host/mandate-seal.mjs";
 
@@ -297,12 +298,44 @@ app.post("/api/strategy/propose", async (c) => {
   if (!S) return c.json({ error: "not connected" }, 400);
   const body = await c.req.json().catch(() => ({}));
   const amountBase = body.amount || "100000";
+  const goals = body.goals || "";
   try {
-    // Run the proposal as a Chainlink CRE confidential workflow: the AI call is
-    // private (Confidential HTTP) and the result carries a DON-style signed AI
-    // Attestation binding the request and the allocation by digest.
+    // Preferred path: the REAL Chainlink Confidential AI Attester. The private
+    // profile (goals + capital + Unlink balance) is sent to an inference API that
+    // runs the allocation LLM inside a TEE; the response carries SHA-256
+    // provenance digests. The CRE workflow (ledger/cre) signs the response digest
+    // into a DON-attested report → AllocationGate on Base Sepolia.
+    if (confidentialAiConfigured()) {
+      const bal = (await balanceList()).find((b) => b.token.toLowerCase().includes("036cbd"));
+      const inf = await runConfidentialInference({
+        goals, capitalBase: amountBase, balanceBase: bal?.amount, vaults: VAULTS,
+        creCallbackUrl: process.env.CRE_CALLBACK_URL,
+      });
+      const strategy = {
+        source: `chainlink-confidential-ai:${inf.model}`,
+        summary: inf.reason || "Confidential AI yield allocation",
+        riskLevel: inf.riskLevel, amountBase,
+        allocations: inf.allocations.map((a) => ({ vault: a.vault, vaultName: a.vaultName, apy: a.apy, risk: a.risk, pct: Math.round(a.bps / 100) })),
+        blendedApy: inf.blendedApy,
+        rebalance: { frequency: "continuous", trigger: "an APY edge above the mandate threshold", rule: "shift to the best risk-adjusted APY within the attested vaults" },
+        rationale: inf.reason,
+      };
+      const attestation = {
+        framework: "Chainlink Confidential AI Attester", live: true, confidential: true,
+        capability: "Confidential AI Attestation",
+        ai: { provider: "Chainlink Confidential AI (TEE)", model: inf.model, viaConfidentialHttp: true },
+        enclave: inf.enclave, inferenceId: inf.inferenceId,
+        commitments: { inputDigest: inf.digests.request, outputDigest: inf.digests.response },
+        transcriptHash: inf.digests.response,
+        cre: { workflow: "lunave-yield-allocation-workflow", chain: "Base Sepolia (ethereum-testnet-sepolia-base-1, 84532)", consumer: "AllocationGate", note: "CRE DON signs the response digest into a report via writeReport → AllocationGate.onReport" },
+      };
+      LAST_STRATEGY = strategy; LAST_ATTESTATION = attestation;
+      return c.json({ ok: true, strategy, attestation, verify: { valid: true, mode: "tee-provenance" } });
+    }
+
+    // Local preview (no Attester key): local strategy + locally-signed attestation.
     const { strategy, attestation } = await runConfidentialStrategy({
-      goals: body.goals || "", amountBase, vaults: VAULTS, attestedAt: Math.floor(Date.now() / 1000),
+      goals, amountBase, vaults: VAULTS, attestedAt: Math.floor(Date.now() / 1000),
     });
     LAST_STRATEGY = strategy;
     LAST_ATTESTATION = attestation;

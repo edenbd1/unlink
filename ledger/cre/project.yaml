@@ -1,0 +1,11 @@
+# Everything stays on Base Sepolia (chainId 84532) — the same chain as the Unlink
+# vaults and the Execution Account. CRE supports it as ethereum-testnet-sepolia-base-1.
+staging-settings:
+  rpcs:
+    - chain-name: ethereum-testnet-sepolia-base-1
+      url: https://base-sepolia-rpc.publicnode.com
+
+production-settings:
+  rpcs:
+    - chain-name: ethereum-testnet-sepolia-base-1
+      url: https://base-sepolia-rpc.publicnode.com

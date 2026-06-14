@@ -1,0 +1,16 @@
+# CRE workflow settings — per-target entrypoint / config / secrets.
+staging-settings:
+  user-workflow:
+    workflow-name: "lunave-yield-allocation-workflow-staging"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.staging.json"
+    secrets-path: "../secrets.yaml"
+
+production-settings:
+  user-workflow:
+    workflow-name: "lunave-yield-allocation-workflow-production"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.production.json"
+    secrets-path: "../secrets.yaml"
