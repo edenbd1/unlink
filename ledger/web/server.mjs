@@ -365,6 +365,7 @@ app.post("/api/agent/start", async (c) => {
   if (sumB !== 10000) targets[0].targetBps += 10000 - sumB; // normalize to 100%
   const mandate = {
     targets,
+    accountIndex: LAST_STRATEGY?.accountIndex ?? null, // the EA holding this strategy
     thresholdPct: Number(body.thresholdPct) || 1.5,
     bandBps: Math.round((Number(body.bandPct) || 15) * 100),       // tilt band ±15% by default
     maxPerVaultBps: Math.round((Number(body.maxPerVaultPct) || 80) * 100),
@@ -566,6 +567,7 @@ app.post("/api/strategy/deploy", async (c) => {
     const res = await S.client.execute({ token: USDC, amount: total.toString(), calls });
     // Record one position per allocation on the new EA so the agent can manage them.
     const accountIndex = res.execution?.account_index;
+    s.accountIndex = accountIndex; // the agent manages THIS strategy's EA (not older ones)
     const created = parts.map((p) => {
       const known = VAULTS.find((v) => v.address.toLowerCase() === p.vault.toLowerCase());
       const pos = { id: String(Date.now()) + Math.round(Number(p.amount) % 1000), vault: p.vault, vaultName: known?.name || p.vaultName, apy: known?.apy ?? p.apy, accountIndex, shares: p.amount.toString() };

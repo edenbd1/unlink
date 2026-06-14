@@ -64,10 +64,19 @@ export function createYieldBot({ getPositions, rebalancePortfolio, log: emit }) 
       const T = mandate.targets;
       const positions = getPositions().filter((p) => p.accountIndex != null && p.vault);
       const apyStr = T.map((t) => `${short(t.vaultName)} ${oracle.read(t.vault).toFixed(1)}%`).join(" · ");
-      if (!positions.length) { note("tick", `watching ${apyStr} — no managed position`); return; }
-
-      const accountIndex = positions[0].accountIndex;
+      // Manage the strategy's own EA: prefer the mandate's EA; otherwise the EA
+      // that holds the most of the target vaults (robust after position-discovery
+      // surfaced older EAs from previous sessions).
+      const targetAddrs = new Set(T.map((t) => t.vault.toLowerCase()));
+      const byEA = {};
+      for (const p of positions) if (targetAddrs.has(p.vault.toLowerCase())) byEA[p.accountIndex] = (byEA[p.accountIndex] || 0) + 1;
+      let accountIndex = mandate.accountIndex;
+      if (accountIndex == null || !byEA[accountIndex]) {
+        const best = Object.keys(byEA).sort((a, b) => byEA[b] - byEA[a])[0];
+        accountIndex = best != null ? Number(best) : null;
+      }
       const ps = positions.filter((p) => p.accountIndex === accountIndex);
+      if (!ps.length) { note("tick", `watching ${apyStr} — no managed position`); return; }
       // current shares + weights per target vault
       const cur = {}; let total = 0;
       for (const t of T) { const p = ps.find((x) => x.vault.toLowerCase() === t.vault.toLowerCase()); const sh = p ? Number(p.shares) : 0; cur[t.vault] = sh; total += sh; }
