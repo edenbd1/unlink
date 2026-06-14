@@ -35,16 +35,25 @@ export async function ledgerEthClients() {
   const account = toAccount({
     address,
 
-    // Permit2 EIP-712. Uses the FAST hashed sign: full clear-signing here would
-    // page through many screens and blow Unlink's deposit prepare->submit window
-    // (same timeout class as transfers), so the recurring deposit stays quick.
+    // Permit2 EIP-712. DEFAULT -> full clear-sign: the device shows the actual
+    // Permit2 fields (no "blind signing ahead" warning). Measured ~25s, which
+    // fits Unlink's deposit window when you tap promptly. DEPOSIT_BLIND=1 falls
+    // back to the fast hashed sign (faster, but shows the blind-signing warning).
     async signTypedData(params) {
-      const types = params.types?.EIP712Domain
-        ? params.types
-        : { ...params.types, EIP712Domain: getTypesForEIP712Domain({ domain: params.domain }) };
-      const domSep = hashDomain({ domain: params.domain, types });
-      const structHash = hashStruct({ data: params.message, primaryType: params.primaryType, types });
-      const sig = await withEth((eth) => eth.signEIP712HashedMessage(ETH_PATH, domSep, structHash));
+      let sig;
+      if (process.env.DEPOSIT_BLIND !== "1") {
+        sig = await withEth((eth) => eth.signEIP712Message(ETH_PATH, {
+          domain: params.domain, types: params.types,
+          primaryType: params.primaryType, message: params.message,
+        }));
+      } else {
+        const types = params.types?.EIP712Domain
+          ? params.types
+          : { ...params.types, EIP712Domain: getTypesForEIP712Domain({ domain: params.domain }) };
+        const domSep = hashDomain({ domain: params.domain, types });
+        const structHash = hashStruct({ data: params.message, primaryType: params.primaryType, types });
+        sig = await withEth((eth) => eth.signEIP712HashedMessage(ETH_PATH, domSep, structHash));
+      }
       let v = Number(sig.v); if (v < 27) v += 27;
       return "0x" + sig.r + sig.s + v.toString(16).padStart(2, "0");
     },
