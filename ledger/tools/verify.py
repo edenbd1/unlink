@@ -1,5 +1,6 @@
 import re,sys
-hdr=open('/Users/eden/data/ny/unlink-ledger-custody/native/app/src/unlink_params.h').read()
+import os
+hdr=open(os.path.join(os.path.dirname(os.path.abspath(__file__)),'..','app','src','unlink_params.h')).read()
 def field(name):
     m=re.search(name+r'\[32\]\s*=\s*\{(.*?)\};',hdr,re.S)
     return int.from_bytes(bytes(int(x,16) for x in re.findall(r'0x([0-9a-fA-F]{2})',m.group(1))),'big')

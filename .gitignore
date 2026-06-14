@@ -5,10 +5,12 @@ dist/
 *.log
 .DS_Store
 
-# native signer build
-native/host/signer
-native/app/build/
-native/app/bin/
-native/app/debug/
-native/app/bld.txt
-native/host/.device-keys.json
+# ledger native signer build artifacts
+ledger/host/signer
+ledger/app/build/
+ledger/app/bin/
+ledger/app/debug/
+ledger/app/bld.txt
+
+# host-cached device key material
+ledger/host/.device-keys.json
