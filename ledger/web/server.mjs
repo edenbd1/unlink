@@ -16,7 +16,9 @@ import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import { buildDeviceAccount, reviewIntentOnDevice, reviewPairsOnDevice, connectApproveOnDevice } from "../host/device-account.mjs";
 import { ledgerEthClients, getLedgerEthAddress } from "../host/ledger-eth-account.mjs";
-import { proposeStrategy } from "../host/yield-agent.mjs";
+import { runConfidentialStrategy, verifyAttestation, attestorAddress } from "../host/cre-attestation.mjs";
+import { createYieldBot } from "../host/yield-bot.mjs";
+import { sealMandate, pgpCardAvailable } from "../host/mandate-seal.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env.UNLINK_ENVIRONMENT || "base-sepolia";
@@ -32,7 +34,8 @@ const VAULTS = [
   { address: (process.env.DEMO_VAULT || "0xedf18f946344395d9fc5e20a67289ccce3f25b6f"), name: "Unlink Stable Vault", apy: 4.2, risk: "low" },
   { address: (process.env.DEMO_VAULT_B || "0xe7c683e76b3a99d32cbda67beb33eedacaf6f90f"), name: "Unlink Growth Vault", apy: 7.8, risk: "high" },
 ];
-let LAST_STRATEGY = null; // last proposed strategy, deployed on approval
+let LAST_STRATEGY = null;    // last proposed strategy, deployed on approval
+let LAST_ATTESTATION = null; // Chainlink CRE AI Attestation for that strategy
 
 let S = null; // { account, admin, client, address }
 let ETH_ADDR = null; // cached Ledger ETH address (vault-share receiver)
@@ -213,31 +216,77 @@ app.post("/api/redeem", async (c) => {
 // Rebalance a position into another vault, WITHOUT leaving the Execution Account:
 // redeemSelf the current vault, then approve + depositSelf into the target vault.
 // One follow-up call on the same EA, one Ledger approval.
-app.post("/api/rebalance", async (c) => {
-  if (!S) return c.json({ error: "not connected" }, 400);
-  const body = await c.req.json().catch(() => ({}));
-  const pos = (body.id && POSITIONS.find((p) => p.id === body.id)) || POSITIONS[POSITIONS.length - 1];
-  if (!pos) return c.json({ error: "no position to rebalance" }, 400);
-  if (pos.accountIndex == null) return c.json({ error: "position has no execution account index" }, 400);
-  const target = vaultByAddr(body.vault) || VAULTS.find((v) => v.address.toLowerCase() !== String(pos.vault || "").toLowerCase());
-  if (!target) return c.json({ error: "target vault required" }, 400);
+// Shared rebalance primitive: redeemSelf the current vault + approve + depositSelf
+// into the target, one follow-up call on the same Execution Account. With
+// `silent` (the autonomous agent) the per-move device review is skipped — the
+// mandate was approved once on the Ledger — but the SE still signs the spend, so
+// custody holds. Interactive callers pass silent=false to get the on-device tap.
+async function doRebalance({ pos, target, silent }) {
+  if (!S) throw new Error("not connected");
+  if (pos.accountIndex == null) throw new Error("position has no execution account index");
   const amount = pos.shares;
   const calls = [];
   if (pos.vault) calls.push({ target: pos.vault, value: "0", data: encodeFunctionData({ abi: ERC4626_REDEEM_SELF, functionName: "redeemSelf", args: [BigInt(amount)] }) });
   calls.push({ target: USDC, value: "0", data: encodeFunctionData({ abi: ERC20_APPROVE, functionName: "approve", args: [target.address, BigInt(amount)] }) });
   calls.push({ target: target.address, value: "0", data: encodeFunctionData({ abi: ERC4626_DEPOSIT_SELF, functionName: "depositSelf", args: [BigInt(amount)] }) });
-  try {
+  if (!silent) {
     const approved = await reviewPairsOnDevice([
       ["Rebalance", human(amount)],
       ["From", pos.vault ? pos.vaultName : "idle"],
       ["To", `${target.name} ~${target.apy}%`],
     ]);
-    if (!approved) return c.json({ error: "rejected on device" }, 400);
-    const res = await S.client.executeAccountCall({ accountIndex: pos.accountIndex, calls });
-    pos.vault = target.address; pos.vaultName = target.name; pos.apy = target.apy;
+    if (!approved) throw new Error("rejected on device");
+  }
+  const res = await S.client.executeAccountCall({ accountIndex: pos.accountIndex, calls });
+  pos.vault = target.address; pos.vaultName = target.name; pos.apy = target.apy;
+  return res;
+}
+
+app.post("/api/rebalance", async (c) => {
+  if (!S) return c.json({ error: "not connected" }, 400);
+  const body = await c.req.json().catch(() => ({}));
+  const pos = (body.id && POSITIONS.find((p) => p.id === body.id)) || POSITIONS[POSITIONS.length - 1];
+  if (!pos) return c.json({ error: "no position to rebalance" }, 400);
+  const target = vaultByAddr(body.vault) || VAULTS.find((v) => v.address.toLowerCase() !== String(pos.vault || "").toLowerCase());
+  if (!target) return c.json({ error: "target vault required" }, 400);
+  try {
+    const res = await doRebalance({ pos, target, silent: false });
     return c.json({ ok: true, result: res, positions: POSITIONS, balances: await balanceList() });
   } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
 });
+
+// --- Autonomous yield agent (#4) --------------------------------------------
+// Approve a mandate once on the Ledger; the agent then rebalances WITHIN it on
+// its own. Each move is still SE-signed (immediate-sign) so the key never leaves
+// the chip — the agent just doesn't re-prompt for moves inside the mandate.
+const bot = createYieldBot({
+  getPositions: () => POSITIONS,
+  rebalance: ({ pos, target }) => doRebalance({ pos, target, silent: true }),
+  log: (m) => console.log(m),
+});
+
+app.post("/api/agent/start", async (c) => {
+  if (!S) return c.json({ error: "not connected" }, 400);
+  const body = await c.req.json().catch(() => ({}));
+  const mandate = {
+    allowedVaults: VAULTS,
+    thresholdPct: Number(body.thresholdPct) || 1.5,
+    maxPerVaultPct: Number(body.maxPerVaultPct) || 80,
+    riskLevel: LAST_STRATEGY?.riskLevel || "medium",
+    rebalance: LAST_STRATEGY?.rebalance || { trigger: "an APY edge above the threshold", rule: "shift to the best risk-adjusted APY" },
+    approvedAt: Date.now(),
+  };
+  // Seal the mandate to the Ledger OpenPGP key (only the device can open it).
+  const seal = await sealMandate(mandate);
+  mandate.sealed = seal.sealed;
+  const status = bot.start({ mandate, intervalSec: body.intervalSec });
+  return c.json({ ok: true, seal, status });
+});
+
+app.post("/api/agent/stop", (c) => c.json({ ok: true, status: bot.stop() }));
+app.get("/api/agent/status", (c) => c.json(bot.status()));
+app.post("/api/agent/tick", async (c) => c.json({ ok: true, status: await bot.tick() }));
+app.get("/api/agent/pgp", async (c) => c.json({ available: await pgpCardAvailable(), recipient: process.env.LEDGER_PGP_RECIPIENT || null }));
 
 // --- AI yield co-pilot -------------------------------------------------------
 // Describe your goals, the agent proposes a concrete strategy. It signs nothing;
@@ -249,10 +298,23 @@ app.post("/api/strategy/propose", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const amountBase = body.amount || "100000";
   try {
-    const strategy = await proposeStrategy({ goals: body.goals || "", amountBase, vaults: VAULTS });
+    // Run the proposal as a Chainlink CRE confidential workflow: the AI call is
+    // private (Confidential HTTP) and the result carries a DON-style signed AI
+    // Attestation binding the request and the allocation by digest.
+    const { strategy, attestation } = await runConfidentialStrategy({
+      goals: body.goals || "", amountBase, vaults: VAULTS, attestedAt: Math.floor(Date.now() / 1000),
+    });
     LAST_STRATEGY = strategy;
-    return c.json({ ok: true, strategy });
+    LAST_ATTESTATION = attestation;
+    const verify = await verifyAttestation(attestation);
+    return c.json({ ok: true, strategy, attestation, verify });
   } catch (e) { return c.json({ error: String(e.message || e) }, 500); }
+});
+
+// Re-verify the last AI Attestation (recompute the report hash, recover signer).
+app.get("/api/attestation/verify", async (c) => {
+  if (!LAST_ATTESTATION) return c.json({ error: "no attestation yet" }, 400);
+  return c.json({ attestation: LAST_ATTESTATION, verify: await verifyAttestation(LAST_ATTESTATION), attestor: attestorAddress });
 });
 
 // Approve the proposed strategy on the Ledger, then deploy the initial allocation

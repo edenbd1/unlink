@@ -98,6 +98,24 @@
     <div id="strategy" style="display:none;margin-top:14px"></div>
   </div>
 
+  <div class="card">
+    <h2>7 · Autonomous yield agent</h2>
+    <p class="muted">Approve a mandate once on the Ledger; the agent then rebalances between vaults on its own — within the mandate, each move still signed in the Secure Element. No tap per move.</p>
+    <div class="row" style="margin-top:8px">
+      <span class="muted">Trigger edge</span><input id="agThresh" value="1.5" style="width:70px" /><span class="muted">% · cap</span>
+      <input id="agCap" value="80" style="width:60px" /><span class="muted">%/vault · every</span>
+      <input id="agInt" value="15" style="width:60px" /><span class="muted">s</span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="bAgent" onclick="toggleAgent()" disabled>Arm agent</button>
+      <button id="bTick" onclick="agentTick()" class="ghost" disabled>Tick now</button>
+      <span class="pill" id="agState"><span class="dot"></span>idle</span>
+      <span class="pill ledger" id="agSeal" style="display:none">mandate sealed · OpenPGP</span>
+    </div>
+    <div id="agApy" class="row" style="margin-top:10px;gap:14px"></div>
+    <ul class="log" id="agLog" style="margin-top:6px"></ul>
+  </div>
+
   <ul class="log" id="log"></ul>
 </div>
 
@@ -109,7 +127,7 @@ let busy=false;
 function setBusy(b, label){
   busy=!!b;
   // only the action BUTTONS lock (the device does one op at a time) — inputs stay editable
-  ["bConnect","bShield","bTransfer","bExecute","bPropose","bDeploy"].forEach(id=>{ const el=$(id); if(el) el.disabled = busy || (id!=="bConnect" && !window.connected); });
+  ["bConnect","bShield","bTransfer","bExecute","bPropose","bDeploy","bAgent"].forEach(id=>{ const el=$(id); if(el) el.disabled = busy || (id!=="bConnect" && !window.connected); });
 }
 
 async function api(path, body){
@@ -134,8 +152,27 @@ function renderPositions(positions){ const el=$("positions"); if(!positions||!po
 async function redeem(id){ try{ setBusy(true,"Redeeming — approve + sign on your Ledger (Unlink app)"); log(`Redeeming vault shares back into the Execution Account — <b>approve on your Ledger</b>…`); const d=await api("/api/redeem",{id}); render(d); renderPositions(d.positions); log(`<b>Redeemed</b> — shares burned, USDC idle in the Execution Account. Signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 async function rebalance(id){ try{ setBusy(true,"Rebalancing — approve + sign on your Ledger (Unlink app)"); log(`Rebalancing to the other vault (within the Execution Account) — <b>approve on your Ledger</b>…`); const d=await api("/api/rebalance",{id}); render(d); renderPositions(d.positions); log(`<b>Rebalanced</b> — moved to a new vault without leaving the Execution Account. Signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
 
-async function propose(){ try{ setBusy(true,"Co-pilot is thinking…"); const amt=u($("stratAmt").value); const goals=$("goals").value.trim(); log(`Co-pilot designing a strategy for ${$("stratAmt").value} USDC…`); const d=await api("/api/strategy/propose",{amount:amt,goals}); renderStrategy(d.strategy); log(`<b>Strategy proposed</b> (${d.strategy.source==="rule"?"rule-based":"AI · "+d.strategy.source}). Review and approve on your Ledger.`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
-function renderStrategy(s){
+async function propose(){ try{ setBusy(true,"Co-pilot is thinking…"); const amt=u($("stratAmt").value); const goals=$("goals").value.trim(); log(`Co-pilot designing a strategy for ${$("stratAmt").value} USDC — <b>confidential CRE workflow</b>…`); const d=await api("/api/strategy/propose",{amount:amt,goals}); renderStrategy(d.strategy, d.attestation, d.verify); log(`<b>Strategy proposed</b> (${d.strategy.source==="rule"?"rule-based":"AI · "+d.strategy.source}) — Chainlink AI Attestation ${d.verify&&d.verify.valid?"verified ✔":"emitted"}. Approve on your Ledger.`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+function shortHex(h){ return h ? h.slice(0,10)+"…"+h.slice(-6) : ""; }
+function renderAttestation(att, verify){
+  if(!att) return "";
+  const ok = verify && verify.valid;
+  return `
+    <div style="margin-top:14px;border:1px solid #1c2e3a;background:#0c151c;border-radius:10px;padding:12px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="font-size:12px;font-weight:700;color:#6ea8fe">⛓ Chainlink CRE · AI Attestation</span>
+        <span class="pill" style="color:${ok?'var(--ok)':'var(--warn)'};border-color:${ok?'#1c3a2c':'#3a2f1c'}">${ok?'signature verified':'emitted'}</span>
+        <span class="pill">${att.confidential?'confidential':''}</span>
+      </div>
+      <p class="muted" style="font-size:12px;margin:8px 0 6px">AI ran as a private CRE workflow (${att.ai.viaConfidentialHttp?'Confidential HTTP':'HTTP'} · ${att.ai.provider} ${att.ai.model||''}). The DON-signed report binds your request and the allocation by digest — your goals and capital are never published.</p>
+      <div class="addr" style="margin:2px 0">DON · ${att.don.id}</div>
+      <div class="addr" style="margin:2px 0">input digest · ${shortHex(att.commitments.inputDigest)}</div>
+      <div class="addr" style="margin:2px 0">output digest · ${shortHex(att.commitments.outputDigest)}</div>
+      <div class="addr" style="margin:2px 0">report ${att.report.hashingAlgo}/${att.report.signingAlgo} · ${shortHex(att.report.hash)}</div>
+      <div class="addr" style="margin:2px 0">attestor · ${shortHex(att.report.signer)}${ok?` → recovered ${shortHex(verify.recovered)} ✔`:''}</div>
+    </div>`;
+}
+function renderStrategy(s, att, verify){
   const el=$("strategy"); el.style.display="block";
   const bars = (s.allocations||[]).map(a=>`
     <div style="margin:8px 0">
@@ -155,9 +192,48 @@ function renderStrategy(s){
     ${bars}
     <div style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin-top:8px">Autonomous rebalancing</div>
     <p class="muted" style="font-size:13px;margin:4px 0">${rb.frequency?rb.frequency+" · ":""}${rb.trigger||""}${rb.rule?". "+rb.rule:""}</p>
+    ${renderAttestation(att, verify)}
     <div class="row" style="margin-top:12px"><button id="bDeploy" onclick="deployStrategy()">Approve &amp; deploy on Ledger</button> <span class="pill ledger">Ledger approve + sign</span></div>`;
 }
-async function deployStrategy(){ try{ setBusy(true,"Deploying strategy — approve on your Ledger"); log(`Deploying the strategy — <b>approve on your Ledger</b>…`); const d=await api("/api/strategy/deploy"); render(d); $("strategy").style.display="none"; log(`<b>Strategy deployed</b> — funds allocated to ${d.strategy.vaultName}, signed on device ✔`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+async function deployStrategy(){ try{ setBusy(true,"Deploying strategy — approve on your Ledger"); log(`Deploying the strategy — <b>approve on your Ledger</b>…`); const d=await api("/api/strategy/deploy"); render(d); $("strategy").style.display="none"; const alloc=(d.strategy.allocations||[]).map(a=>`${a.pct}% ${a.vaultName.replace(/^Unlink /,"")}`).join(", "); log(`<b>Strategy deployed</b> — allocated ${alloc}, signed on device ✔. You can now arm the autonomous agent (card 7).`); }catch(e){ log(e.message,"err"); } finally{ setBusy(false); } }
+
+// --- Autonomous agent (card 7) ---
+let agentRunning=false, agentPoll=null;
+async function toggleAgent(){
+  try{
+    if(agentRunning){ const d=await api("/api/agent/stop"); renderAgent(d.status); log("<b>Agent disarmed.</b>"); stopAgentPoll(); }
+    else{
+      $("bAgent").disabled=true;
+      log("Arming the agent — <b>sealing the mandate to your Ledger OpenPGP key</b>…");
+      const d=await api("/api/agent/start",{ thresholdPct:Number($("agThresh").value), maxPerVaultPct:Number($("agCap").value), intervalSec:Number($("agInt").value) });
+      renderAgent(d.status);
+      log(`<b>Agent armed.</b> Mandate ${d.seal.sealed?"sealed to Ledger OpenPGP ✔":"set (OpenPGP card not present — unsealed)"}. It rebalances on its own within the mandate.`);
+      startAgentPoll();
+    }
+  }catch(e){ log(e.message,"err"); } finally{ $("bAgent").disabled=false; }
+}
+async function agentTick(){ try{ const d=await api("/api/agent/tick"); renderAgent(d.status); }catch(e){ log(e.message,"err"); } }
+function startAgentPoll(){ stopAgentPoll(); agentPoll=setInterval(async()=>{ try{ const s=await (await fetch("/api/agent/status")).json(); renderAgent(s); }catch(_){} }, 3000); }
+function stopAgentPoll(){ if(agentPoll){ clearInterval(agentPoll); agentPoll=null; } }
+let agentLogSeen=0;
+function renderAgent(st){
+  if(!st) return;
+  agentRunning=!!st.running;
+  $("bAgent").textContent = agentRunning?"Disarm agent":"Arm agent";
+  $("bTick").disabled = !agentRunning;
+  $("agState").innerHTML = `<span class="dot ${agentRunning?'on':''}"></span>${agentRunning?`armed · ${st.ticks} ticks · ${st.moves} rebalances`:'idle'}`;
+  $("agSeal").style.display = (st.mandate && st.mandate.sealed)?"inline-block":"none";
+  $("agApy").innerHTML = (st.apys||[]).map(a=>`<span style="font-size:13px"><b>${a.name.replace(/^Unlink /,"")}</b> <span class="muted">${a.apy}%</span></span>`).join("");
+  // stream new agent log lines into the page log once, newest first
+  const lines=(st.log||[]).slice().reverse();
+  if(st.ticks+st.moves>agentLogSeen){
+    for(const l of lines.slice(-(st.ticks+st.moves-agentLogSeen))){
+      if(l.kind==="rebalance") log(`<b>Agent rebalanced</b> — ${l.msg}${l.txId?` (${String(l.txId).slice(0,12)}…)`:""}, signed on device ✔`);
+    }
+    agentLogSeen=st.ticks+st.moves;
+  }
+  $("agLog").innerHTML = (st.log||[]).slice(0,6).map(l=>`<li>${l.kind==="rebalance"?'<b style="color:var(--ok)">↻ '+l.msg+'</b>':l.kind==="error"?'<span class="err">'+l.msg+'</span>':l.msg}</li>`).join("");
+}
 </script>
 </body>
 </html>

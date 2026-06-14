@@ -14,3 +14,7 @@ ledger/app/bld.txt
 
 # host-cached device key material
 ledger/host/.device-keys.json
+
+# sealed/unsealed agent mandate (OpenPGP)
+ledger/host/.mandate.json
+ledger/host/.mandate.gpg
