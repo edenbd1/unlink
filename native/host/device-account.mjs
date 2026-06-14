@@ -123,13 +123,24 @@ export async function connectApproveOnDevice() {
   return (await sendApduSW("e00a0000", 120)) === "9000";
 }
 
-// Ask the device to display a transfer (amount + recipient) and wait for a
-// physical approval — BEFORE the tx is prepared, so the tap is outside the
-// engine's prepare->submit window. Resolves true on approval, false on rejection.
-export async function reviewIntentOnDevice(amount, recipient) {
-  const payload = Buffer.concat([Buffer.from(amount, "utf8"), Buffer.from([0]), Buffer.from(recipient, "utf8")]);
+// Show a transaction on the device (a list of [label, value] pairs) and wait for
+// a physical approval, BEFORE the tx is prepared (so the tap is outside the
+// engine's prepare->submit window). Resolves true on approval, false on reject.
+export async function reviewPairsOnDevice(pairs) {
+  const parts = [];
+  for (const [label, value] of pairs.slice(0, 4)) {
+    parts.push(Buffer.from(String(label), "utf8"), Buffer.from([0]),
+               Buffer.from(String(value), "utf8"), Buffer.from([0]));
+  }
+  const joined = Buffer.concat(parts);
+  const payload = joined.subarray(0, joined.length - 1); // drop the trailing NUL
   const apduHex = "e0090000" + payload.length.toString(16).padStart(2, "0") + payload.toString("hex");
   return (await sendApduSW(apduHex, 120)) === "9000";
+}
+
+// Convenience for a plain transfer (Amount + recipient address).
+export async function reviewIntentOnDevice(amount, recipient) {
+  return reviewPairsOnDevice([["Amount", amount], ["To", recipient]]);
 }
 
 // Read the viewing private key (32 bytes) from the device (INS 0x08).

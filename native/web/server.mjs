@@ -14,7 +14,7 @@ import { createUnlinkClient, evm } from "@unlink-xyz/sdk/client";
 import { createWalletClient, createPublicClient, http, encodeFunctionData } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
-import { buildDeviceAccount, reviewIntentOnDevice, connectApproveOnDevice } from "../host/device-account.mjs";
+import { buildDeviceAccount, reviewIntentOnDevice, reviewPairsOnDevice, connectApproveOnDevice } from "../host/device-account.mjs";
 import { ledgerEthClients, getLedgerEthAddress } from "../host/ledger-eth-account.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -138,6 +138,7 @@ app.post("/api/execute", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const amount = body.amount || "100000";
   const vault = body.vault || DEMO_VAULT;
+  const vaultName = body.vaultName || "Unlink Demo Vault";
   const receiver = body.receiver || ETH_ADDR || LEDGER_ETH;
   if (!vault) return c.json({ error: "vault address required" }, 400);
   const calls = [
@@ -145,7 +146,11 @@ app.post("/api/execute", async (c) => {
     { target: vault, value: "0", data: encodeFunctionData({ abi: ERC4626_DEPOSIT, functionName: "deposit", args: [BigInt(amount), receiver] }) },
   ];
   try {
-    const approved = await reviewIntentOnDevice(human(amount), "vault via EA");
+    const approved = await reviewPairsOnDevice([
+      ["Amount", human(amount)],
+      ["Vault", vaultName],
+      ["Address", vault],
+    ]);
     if (!approved) return c.json({ error: "rejected on device" }, 400);
     const res = await S.client.execute({ token: USDC, amount, calls });
     return c.json({ ok: true, result: res, balances: await balanceList() });
