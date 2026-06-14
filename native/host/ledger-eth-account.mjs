@@ -1,64 +1,74 @@
-// A viem account whose Ethereum signatures come from the Ledger Ethereum app
-// (via tools/eth_apdu.py over the Python HID poller — no native node-hid build).
-// Used so the Ledger's own ETH address signs the Permit2 deposit (and the
-// one-time Permit2 approval), shielding USDC straight from the device.
-import { createWalletClient, createPublicClient, http, hashDomain, hashStruct, serializeTransaction, getTypesForEIP712Domain } from "viem";
+// A viem account whose Ethereum signatures come from the Ledger Ethereum app via
+// @ledgerhq/hw-app-eth — which CLEAR-SIGNS: it resolves token/plugin descriptors
+// from Ledger's CAL service so the device shows "Approve USDC" and the Permit2
+// fields instead of a raw blind hash. Used so the Ledger's own ETH address signs
+// the Permit2 deposit, shielding USDC straight from the device.
+import { createRequire } from "module";
+import { createWalletClient, createPublicClient, http, serializeTransaction, hashDomain, hashStruct, getTypesForEIP712Domain } from "viem";
 import { toAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 
-const execFileP = promisify(execFile);
-const ETH_PY = join(dirname(fileURLToPath(import.meta.url)), "..", "tools", "eth_apdu.py");
+const require = createRequire(import.meta.url);
+const Eth = require("@ledgerhq/hw-app-eth").default;
+const { ledgerService } = require("@ledgerhq/hw-app-eth");
+const TransportNodeHid = require("@ledgerhq/hw-transport-node-hid").default;
+
 export const ETH_PATH = "44'/60'/0'/0/0";
+const RPC = process.env.BASE_SEPOLIA_RPC || "https://base-sepolia-rpc.publicnode.com";
 
-async function eth(...args) {
-  const { stdout } = await execFileP("python3", [ETH_PY, ...args], { maxBuffer: 1 << 20 });
-  return stdout.trim().split("\n").pop().trim();
+// Open a transport, run fn(eth), always close (so the Python poller / Unlink app
+// can use the HID device afterwards). node-hid and the Python poller must never
+// hold the device at the same time.
+async function withEth(fn) {
+  const transport = await TransportNodeHid.create();
+  try { return await fn(new Eth(transport)); }
+  finally { try { await transport.close(); } catch {} }
 }
 
 export async function getLedgerEthAddress() {
-  return await eth("get_address", ETH_PATH);
+  return (await withEth((eth) => eth.getAddress(ETH_PATH, false))).address;
 }
 
-// Build a viem wallet/public client pair backed by the Ledger ETH app.
 export async function ledgerEthClients() {
   const address = await getLedgerEthAddress();
 
   const account = toAccount({
     address,
 
+    // Permit2 EIP-712. Uses the FAST hashed sign: full clear-signing here would
+    // page through many screens and blow Unlink's deposit prepare->submit window
+    // (same timeout class as transfers), so the recurring deposit stays quick.
     async signTypedData(params) {
       const types = params.types?.EIP712Domain
         ? params.types
         : { ...params.types, EIP712Domain: getTypesForEIP712Domain({ domain: params.domain }) };
-      const domainSep = hashDomain({ domain: params.domain, types });
+      const domSep = hashDomain({ domain: params.domain, types });
       const structHash = hashStruct({ data: params.message, primaryType: params.primaryType, types });
-      const sig = await eth("sign712", ETH_PATH, domainSep.slice(2), structHash.slice(2)); // 0x r||s||v
-      const b = sig.slice(2);
-      let v = parseInt(b.slice(128, 130), 16); if (v < 27) v += 27;          // normalize recovery id
-      return "0x" + b.slice(0, 128) + v.toString(16).padStart(2, "0");
+      const sig = await withEth((eth) => eth.signEIP712HashedMessage(ETH_PATH, domSep, structHash));
+      let v = Number(sig.v); if (v < 27) v += 27;
+      return "0x" + sig.r + sig.s + v.toString(16).padStart(2, "0");
     },
 
+    // Clear-signed transaction (the one-time Permit2 approve shows "Approve USDC").
     async signTransaction(tx, opts) {
       const serializer = opts?.serializer || serializeTransaction;
-      const unsigned = serializer(tx);
-      const packed = await eth("sign_tx", ETH_PATH, unsigned.slice(2)); // 0x v(1) r(32) s(32)
-      const b = packed.slice(2);
-      const v = parseInt(b.slice(0, 2), 16);
-      const r = "0x" + b.slice(2, 66);
-      const s = "0x" + b.slice(66, 130);
-      // EIP-1559 / typed txs use yParity (0/1); legacy uses v.
-      const signature = tx.type && tx.type !== "legacy" ? { r, s, yParity: v & 1 } : { r, s, v: BigInt(v) };
+      const raw = serializer(tx).slice(2);
+      const sig = await withEth(async (eth) => {
+        const resolution = await ledgerService
+          .resolveTransaction(raw, {}, { erc20: true, externalPlugins: true, nft: false })
+          .catch(() => null);
+        return eth.clearSignTransaction(ETH_PATH, raw, resolution || {}, true);
+      });
+      const v = parseInt(sig.v, 16);
+      const r = "0x" + sig.r, s = "0x" + sig.s;
+      const signature = tx.type && tx.type !== "legacy" ? { r, s, yParity: v % 2 } : { r, s, v: BigInt(v) };
       return serializer(tx, signature);
     },
 
     async signMessage() { throw new Error("signMessage via Ledger not wired"); },
   });
 
-  const walletClient = createWalletClient({ account, chain: baseSepolia, transport: http() });
-  const publicClient = createPublicClient({ chain: baseSepolia, transport: http() });
+  const walletClient = createWalletClient({ account, chain: baseSepolia, transport: http(RPC) });
+  const publicClient = createPublicClient({ chain: baseSepolia, transport: http(RPC) });
   return { account, walletClient, publicClient, address };
 }

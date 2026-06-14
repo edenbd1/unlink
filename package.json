@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Unlink \u2014 private transactions where your seed lives encrypted in your Ledger (OpenPGP), and every move needs a physical tap (Security Key).",
+  "description": "Unlink — private transactions where your seed lives encrypted in your Ledger (OpenPGP), and every move needs a physical tap (Security Key).",
   "scripts": {
     "dev": "vite --port 3000",
     "server": "node --env-file=.env --experimental-strip-types server/index.ts",
@@ -14,10 +14,13 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.0.4",
+    "@ledgerhq/hw-app-eth": "^7.8.6",
+    "@ledgerhq/hw-transport-node-hid": "^6.33.4",
     "@simplewebauthn/browser": "^13.3.0",
     "@simplewebauthn/server": "^13.3.1",
     "@unlink-xyz/sdk": "^0.3.0-canary.598",
     "hono": "^4.12.25",
+    "node-hid": "^3.3.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "viem": "^2.52.2"
